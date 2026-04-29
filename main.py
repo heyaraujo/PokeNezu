@@ -1118,14 +1118,14 @@ async def tutorial(interaction: discord.Interaction):
 
 @bot.tree.command(name="iniciar", description="Comece sua jornada Pokémon.")
 async def iniciar(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
     if usuario_tem_inicial(interaction.user.id):
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "✅ Você já começou sua jornada! Use `/pokemon` para ver seus Pokémon.",
             ephemeral=True
         )
         return
-
-    embeds = []
 
     intro = discord.Embed(
         title="👋 Bem-vindo ao mundo dos Pokémon!",
@@ -1143,9 +1143,11 @@ async def iniciar(interaction: discord.Interaction):
         url="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/25.png"
     )
 
-    embeds.append(intro)
+    await interaction.followup.send(embed=intro, ephemeral=True)
 
     for grupo in INICIAIS_VISUAL:
+        embeds = []
+
         for nome, imagem in grupo["pokemons"]:
             nome_limpo = nome.split(" ", 1)[1].lower()
 
@@ -1161,10 +1163,7 @@ async def iniciar(interaction: discord.Interaction):
             embed.set_image(url=imagem)
             embeds.append(embed)
 
-    await interaction.response.send_message(embeds=embeds[:10])
-
-    for i in range(10, len(embeds), 10):
-        await interaction.followup.send(embeds=embeds[i:i + 10])
+        await interaction.followup.send(embeds=embeds, ephemeral=True)
 
 
 @bot.tree.command(name="escolher", description="Escolha seu Pokémon inicial.")
