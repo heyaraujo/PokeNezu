@@ -2,6 +2,8 @@ import os
 import random
 import asyncio
 import discord
+from flask import Flask
+from threading import Thread
 from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
@@ -1248,6 +1250,19 @@ async def spawn_teste(interaction: discord.Interaction):
     await interaction.response.send_message("🌿 Gerando um Pokémon selvagem...", ephemeral=True)
     await enviar_spawn(interaction.channel)
 
+# ===== KEEP ALIVE RENDER =====
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "PokeNezu online!"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+Thread(target=run_web).start()
+# =============================
 
 if not TOKEN:
     raise RuntimeError("Token do Discord não encontrado. Configure o arquivo .env.")
