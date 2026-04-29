@@ -1,4 +1,4 @@
-# PokéBR - Bot estilo Pokétwo em Português
+# PokéNezu - Bot estilo Pokétwo em Português
 
 Bot Pokémon para Discord com funções parecidas com o Pokétwo, mas totalmente em português.
 
