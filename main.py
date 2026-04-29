@@ -432,8 +432,107 @@ def pokemon_dict_para_tuple(pokemon, nivel):
     )
 
 
+
+def conectar_main():
+    return sqlite3.connect("pokebot.db")
+
+
+def listar_pokemons_com_id(discord_id: int):
+    conn = conectar_main()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em
+    FROM pokemons_capturados
+    WHERE discord_id = ?
+    ORDER BY id ASC
+    LIMIT 25
+    """, (str(discord_id),))
+    dados = cursor.fetchall()
+    conn.close()
+    return dados
+
+
+def buscar_pokemon_por_id(discord_id: int, pokemon_id: int):
+    conn = conectar_main()
+    cursor = conn.cursor()
+    cursor.execute("""
+    SELECT id, nome, nivel, hp, ataque, defesa, velocidade
+    FROM pokemons_capturados
+    WHERE discord_id = ? AND id = ?
+    LIMIT 1
+    """, (str(discord_id), pokemon_id))
+    dados = cursor.fetchone()
+    conn.close()
+    return dados
+
+
+def pokemon_ativo_ou_primeiro(discord_id: int):
+    pokemon_id = pokemon_ativo_usuarios.get(discord_id)
+    if pokemon_id:
+        pokemon = buscar_pokemon_por_id(discord_id, pokemon_id)
+        if pokemon:
+            return pokemon
+    return primeiro_pokemon(discord_id)
+
+
+def salvar_insignia(discord_id: int, insignia: str):
+    if discord_id not in insignias_usuarios:
+        insignias_usuarios[discord_id] = set()
+    insignias_usuarios[discord_id].add(insignia)
+
+
+def listar_insignias(discord_id: int):
+    return sorted(list(insignias_usuarios.get(discord_id, set())))
+
+
+async def buscar_ataques_reais(nome_pokemon: str, limite: int = 4):
+    url = f"https://pokeapi.co/api/v2/pokemon/{nome_pokemon.lower()}"
+    ataques = []
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return ATAQUES[:limite]
+                dados = await resp.json()
+            movimentos = dados.get("moves", [])
+            random.shuffle(movimentos)
+            for move_item in movimentos:
+                move_url = move_item["move"]["url"]
+                async with session.get(move_url) as move_resp:
+                    if move_resp.status != 200:
+                        continue
+                    move_data = await move_resp.json()
+                poder = move_data.get("power")
+                tipo = move_data.get("type", {}).get("name", "normal")
+                nome = move_data.get("name", "ataque").replace("-", " ").title()
+                if not poder:
+                    continue
+                status = None
+                efeito = (move_data.get("effect_entries") or [{}])[0].get("effect", "").lower()
+                if "burn" in efeito:
+                    status = "queimar"
+                elif "paralyze" in efeito or "paralysis" in efeito:
+                    status = "paralisar"
+                ataques.append({"nome": nome[:80], "tipo": tipo, "poder": min(int(poder), 120), "status": status})
+                if len(ataques) >= limite:
+                    break
+    except Exception:
+        return ATAQUES[:limite]
+    return ataques[:limite] if ataques else ATAQUES[:limite]
+
+
+def ataques_para_select_lista(ataques):
+    return [discord.SelectOption(label=a["nome"][:100], description=f"Tipo {TIPOS_PTBR.get(a['tipo'], a['tipo'].title())} | Poder {a['poder']}", value=a["nome"][:100]) for a in ataques[:4]]
+
+
+def ataque_por_nome_lista(nome, ataques):
+    for ataque in ataques:
+        if ataque["nome"][:100] == nome:
+            return ataque
+    return ataques[0]
+
 class BatalhaNPCView(discord.ui.View):
-    def __init__(self, jogador, meu_pokemon, meu_info, pokemon_npc, nivel_npc, nome_npc):
+    def __init__(self, jogador, meu_pokemon, meu_info, pokemon_npc, nivel_npc, nome_npc, ataques_jogador=None, ataques_npc=None):
         super().__init__(timeout=120)
 
         self.jogador = jogador
@@ -457,7 +556,7 @@ class BatalhaNPCView(discord.ui.View):
             placeholder="Escolha seu ataque",
             min_values=1,
             max_values=1,
-            options=ataques_para_select()
+            options=ataques_para_select_lista(self.ataques_jogador)
         )
 
         self.select.callback = self.escolher_ataque
@@ -603,8 +702,94 @@ class BatalhaNPCView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
+
+class BatalhaGinasioView(discord.ui.View):
+    def __init__(self, jogador, meu_pokemon, meu_info, lider, pokemon_lider, ataques_jogador=None, ataques_lider=None):
+        super().__init__(timeout=180)
+        self.jogador = jogador
+        self.meu_pokemon = meu_pokemon
+        self.meu_info = meu_info
+        self.lider = lider
+        self.pokemon_lider = pokemon_lider
+        self.ataques_jogador = ataques_jogador or ATAQUES[:4]
+        self.ataques_lider = ataques_lider or ATAQUES[:4]
+        self.hp_meu_max = hp_batalha(meu_pokemon)
+        self.hp_lider_max = hp_batalha(pokemon_dict_para_tuple(pokemon_lider, lider["nivel"]))
+        self.hp_meu = self.hp_meu_max
+        self.hp_lider = self.hp_lider_max
+        self.status_meu = None
+        self.status_lider = None
+        self.turno = 1
+        self.select = discord.ui.Select(placeholder="Escolha seu ataque contra o líder", min_values=1, max_values=1, options=ataques_para_select_lista(self.ataques_jogador))
+        self.select.callback = self.escolher_ataque
+        self.add_item(self.select)
+
+    async def escolher_ataque(self, interaction: discord.Interaction):
+        if interaction.user.id != self.jogador.id:
+            await interaction.response.send_message("❌ Essa batalha de ginásio não é sua.", ephemeral=True)
+            return
+        ataque_jogador = ataque_por_nome_lista(self.select.values[0], self.ataques_jogador)
+        ataque_lider = random.choice(self.ataques_lider)
+        meu_id, meu_nome, meu_nivel, meu_hp, meu_ataque, meu_defesa, meu_vel = self.meu_pokemon
+        lider_tuple = pokemon_dict_para_tuple(self.pokemon_lider, self.lider["nivel"])
+        log = []
+        if pode_atacar(self.status_meu):
+            dano, mult = calcular_dano(self.meu_pokemon, ataque_jogador, self.pokemon_lider["defesa"], self.pokemon_lider["tipos"], self.status_meu)
+            self.hp_lider = max(0, self.hp_lider - dano)
+            log.append(f"🧢 **{meu_nome.title()}** usou **{ataque_jogador['nome']}** e causou `{dano}`. {texto_efetividade(mult)}")
+            self.status_lider, msg = aplicar_status(ataque_jogador, self.status_lider)
+            if msg:
+                log.append(msg)
+        else:
+            log.append(f"⚡ **{meu_nome.title()}** está paralisado e não conseguiu atacar!")
+        if self.hp_lider > 0:
+            if pode_atacar(self.status_lider):
+                dano, mult = calcular_dano(lider_tuple, ataque_lider, meu_defesa, self.meu_info["tipos"], self.status_lider)
+                self.hp_meu = max(0, self.hp_meu - dano)
+                log.append(f"🏆 **{self.pokemon_lider['nome'].title()}** usou **{ataque_lider['nome']}** e causou `{dano}`. {texto_efetividade(mult)}")
+                self.status_meu, msg = aplicar_status(ataque_lider, self.status_meu)
+                if msg:
+                    log.append(msg)
+            else:
+                log.append(f"⚡ **{self.pokemon_lider['nome'].title()}** está paralisado e não conseguiu atacar!")
+        queimadura_meu = dano_status(self.status_meu, self.hp_meu_max)
+        queimadura_lider = dano_status(self.status_lider, self.hp_lider_max)
+        if queimadura_meu and self.hp_meu > 0:
+            self.hp_meu = max(0, self.hp_meu - queimadura_meu)
+            log.append(f"🔥 **{meu_nome.title()}** sofreu `{queimadura_meu}` de dano por queimadura.")
+        if queimadura_lider and self.hp_lider > 0:
+            self.hp_lider = max(0, self.hp_lider - queimadura_lider)
+            log.append(f"🔥 **{self.pokemon_lider['nome'].title()}** sofreu `{queimadura_lider}` de dano por queimadura.")
+        embed = discord.Embed(title=f"🏆 Ginásio — {self.lider['nome']}", description="\n".join(log), color=discord.Color.gold())
+        embed.add_field(name=self.jogador.display_name, value=f"**{meu_nome.title()}** Nv. {meu_nivel}\n❤️ `{self.hp_meu}/{self.hp_meu_max}`\n`{barra_hp(self.hp_meu, self.hp_meu_max)}`\nStatus: {texto_status(self.status_meu)}", inline=True)
+        embed.add_field(name=f"{self.lider['nome']} — {self.lider['tipo_pt']}", value=f"**{self.pokemon_lider['nome'].title()}** Nv. {self.lider['nivel']}\n❤️ `{self.hp_lider}/{self.hp_lider_max}`\n`{barra_hp(self.hp_lider, self.hp_lider_max)}`\nStatus: {texto_status(self.status_lider)}", inline=True)
+        terminou = False
+        if self.hp_lider <= 0:
+            terminou = True
+            adicionar_nivel_pokemon(meu_id, 2)
+            salvar_insignia(self.jogador.id, self.lider["insignia"])
+            embed.add_field(name="🎖️ Vitória de Ginásio!", value=f"Você ganhou **{self.lider['insignia']}** e seu **{meu_nome.title()}** ganhou **+2 níveis**!", inline=False)
+            lider_ginasio_atual["lider"] = None
+            evolucao = await tentar_evoluir_pokemon(meu_id, meu_nome, meu_nivel + 2)
+            if evolucao:
+                embed.add_field(name="✨ Evolução automática!", value=f"Seu **{evolucao['nome_antigo'].title()}** evoluiu para **{evolucao['nome_novo'].title()}**!", inline=False)
+        elif self.hp_meu <= 0:
+            terminou = True
+            embed.add_field(name="💀 Derrota!", value=f"{self.lider['nome']} venceu. Tente novamente quando outro líder aparecer.", inline=False)
+        else:
+            self.turno += 1
+            embed.set_footer(text=f"Turno {self.turno} — escolha o próximo ataque.")
+        if self.lider.get("imagem"):
+            embed.set_image(url=self.lider["imagem"])
+        if self.pokemon_lider.get("sprite"):
+            embed.set_thumbnail(url=self.pokemon_lider["sprite"])
+        if terminou:
+            for item in self.children:
+                item.disabled = True
+        await interaction.response.edit_message(embed=embed, view=self)
+
 class BatalhaPVPView(discord.ui.View):
-    def __init__(self, jogador1, jogador2, p1, p2, p1_info, p2_info):
+    def __init__(self, jogador1, jogador2, p1, p2, p1_info, p2_info, ataques_p1=None, ataques_p2=None):
         super().__init__(timeout=180)
 
         self.j1 = jogador1
@@ -631,14 +816,14 @@ class BatalhaPVPView(discord.ui.View):
             placeholder=f"{jogador1.display_name}, escolha seu ataque",
             min_values=1,
             max_values=1,
-            options=ataques_para_select()
+            options=ataques_para_select_lista(self.ataques_p1)
         )
 
         self.select2 = discord.ui.Select(
             placeholder=f"{jogador2.display_name}, escolha seu ataque",
             min_values=1,
             max_values=1,
-            options=ataques_para_select()
+            options=ataques_para_select_lista(self.ataques_p2)
         )
 
         self.select1.callback = self.callback_jogador1
@@ -652,7 +837,7 @@ class BatalhaPVPView(discord.ui.View):
             await interaction.response.send_message("❌ Esse menu não é seu.", ephemeral=True)
             return
 
-        self.escolha1 = ataque_por_nome(self.select1.values[0])
+        self.escolha1 = ataque_por_nome_lista(self.select1.values[0], self.ataques_p1)
         await interaction.response.send_message("✅ Ataque escolhido. Aguardando o outro jogador.", ephemeral=True)
         await self.processar_turno_se_pronto(interaction)
 
@@ -661,7 +846,7 @@ class BatalhaPVPView(discord.ui.View):
             await interaction.response.send_message("❌ Esse menu não é seu.", ephemeral=True)
             return
 
-        self.escolha2 = ataque_por_nome(self.select2.values[0])
+        self.escolha2 = ataque_por_nome_lista(self.select2.values[0], self.ataques_p2)
         await interaction.response.send_message("✅ Ataque escolhido. Aguardando o outro jogador.", ephemeral=True)
         await self.processar_turno_se_pronto(interaction)
 
@@ -856,6 +1041,8 @@ async def tutorial(interaction: discord.Interaction):
     embed.add_field(name="4️⃣ Veja sua coleção", value="Use `/pokemon`.", inline=False)
     embed.add_field(name="5️⃣ Batalhe contra NPC", value="Use `/batalhar_npc` e escolha um ataque.", inline=False)
     embed.add_field(name="6️⃣ Batalhe contra jogador", value="Use `/batalhar usuario:@jogador`.", inline=False)
+    embed.add_field(name="7️⃣ Escolher Pokémon", value="Use `/selecionar indice:1` para escolher quem batalha.", inline=False)
+    embed.add_field(name="8️⃣ Ginásio", value="Quando aparecer um líder, use `/batalhar_ginasio`.", inline=False)
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -1098,8 +1285,8 @@ async def batalhar(interaction: discord.Interaction, usuario: discord.Member):
         await interaction.followup.send("❌ Você não pode batalhar contra você mesmo.", ephemeral=True)
         return
 
-    p1 = primeiro_pokemon(interaction.user.id)
-    p2 = primeiro_pokemon(usuario.id)
+    p1 = pokemon_ativo_ou_primeiro(interaction.user.id)
+    p2 = pokemon_ativo_ou_primeiro(usuario.id)
 
     if not p1:
         await interaction.followup.send("❌ Você ainda não tem Pokémon. Use `/iniciar`.", ephemeral=True)
@@ -1144,7 +1331,10 @@ async def batalhar(interaction: discord.Interaction, usuario: discord.Member):
         inline=True
     )
 
-    view = BatalhaPVPView(interaction.user, usuario, p1, p2, p1_info, p2_info)
+    ataques_p1 = await buscar_ataques_reais(p1[1])
+    ataques_p2 = await buscar_ataques_reais(p2[1])
+
+    view = BatalhaPVPView(interaction.user, usuario, p1, p2, p1_info, p2_info, ataques_p1, ataques_p2)
     await interaction.followup.send(embed=embed, view=view)
 
 
@@ -1152,7 +1342,7 @@ async def batalhar(interaction: discord.Interaction, usuario: discord.Member):
 async def batalhar_npc(interaction: discord.Interaction):
     await interaction.response.defer()
 
-    meu_pokemon = primeiro_pokemon(interaction.user.id)
+    meu_pokemon = pokemon_ativo_ou_primeiro(interaction.user.id)
 
     if not meu_pokemon:
         await interaction.followup.send(
@@ -1236,6 +1426,74 @@ async def batalhar_npc(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, view=view)
 
 
+
+@bot.tree.command(name="selecionar", description="Escolhe qual Pokémon você vai usar nas batalhas.")
+@app_commands.describe(indice="Número do Pokémon na sua lista do /pokemon")
+async def selecionar(interaction: discord.Interaction, indice: int):
+    pokemons = listar_pokemons_com_id(interaction.user.id)
+    if not pokemons:
+        await interaction.response.send_message("❌ Você ainda não tem Pokémon.", ephemeral=True)
+        return
+    if indice < 1 or indice > len(pokemons):
+        await interaction.response.send_message("❌ Índice inválido. Use `/pokemon` para ver sua lista.", ephemeral=True)
+        return
+    escolhido = pokemons[indice - 1]
+    pokemon_id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = escolhido
+    pokemon_ativo_usuarios[interaction.user.id] = pokemon_id
+    dados = await buscar_pokemon(nome)
+    embed = discord.Embed(title="✅ Pokémon selecionado!", description=f"Você escolheu **{nome.title()}** Nv. {nivel} para batalhar.", color=discord.Color.green())
+    if dados and dados.get("sprite"):
+        embed.set_thumbnail(url=dados["sprite"])
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="insignias", description="Mostra suas insígnias de ginásio.")
+async def insignias(interaction: discord.Interaction):
+    minhas = listar_insignias(interaction.user.id)
+    if not minhas:
+        await interaction.response.send_message("🎖️ Você ainda não ganhou nenhuma insígnia.", ephemeral=True)
+        return
+    texto = "\n".join([f"🎖️ **{i}**" for i in minhas])
+    embed = discord.Embed(title=f"Insígnias de {interaction.user.display_name}", description=texto, color=discord.Color.gold())
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="batalhar_ginasio", description="Desafie o líder de ginásio que apareceu no canal.")
+async def batalhar_ginasio(interaction: discord.Interaction):
+    await interaction.response.defer()
+    lider = lider_ginasio_atual.get("lider")
+    if not lider:
+        await interaction.followup.send("❌ Nenhum líder de ginásio apareceu agora.", ephemeral=True)
+        return
+    if lider_ginasio_atual.get("canal_id") != interaction.channel.id:
+        await interaction.followup.send("❌ O líder de ginásio não apareceu neste canal.", ephemeral=True)
+        return
+    if lider_ginasio_atual.get("criado_em") and time.time() - lider_ginasio_atual["criado_em"] > 7200:
+        lider_ginasio_atual["lider"] = None
+        await interaction.followup.send("❌ Esse líder de ginásio já foi embora.", ephemeral=True)
+        return
+    meu_pokemon = pokemon_ativo_ou_primeiro(interaction.user.id)
+    if not meu_pokemon:
+        await interaction.followup.send("❌ Você ainda não tem Pokémon. Use `/iniciar` primeiro.", ephemeral=True)
+        return
+    meu_info = await buscar_pokemon(meu_pokemon[1])
+    pokemon_lider = await buscar_pokemon(lider["pokemon"])
+    if not meu_info or not pokemon_lider:
+        await interaction.followup.send("❌ Não consegui carregar os dados da batalha.", ephemeral=True)
+        return
+    hp_meu = hp_batalha(meu_pokemon)
+    hp_lider = hp_batalha(pokemon_dict_para_tuple(pokemon_lider, lider["nivel"]))
+    embed = discord.Embed(title=f"🏆 Desafio de Ginásio: {lider['nome']}", description=f"Valendo a **{lider['insignia']}**!\nEscolha um ataque para começar a batalha.", color=discord.Color.gold())
+    embed.add_field(name=f"{interaction.user.display_name}", value=f"**{meu_pokemon[1].title()}** Nv. {meu_pokemon[2]}\n❤️ `{hp_meu}/{hp_meu}`\n`{barra_hp(hp_meu, hp_meu)}`\nStatus: ✅ Normal", inline=True)
+    embed.add_field(name=f"{lider['nome']} — {lider['tipo_pt']}", value=f"**{pokemon_lider['nome'].title()}** Nv. {lider['nivel']}\n❤️ `{hp_lider}/{hp_lider}`\n`{barra_hp(hp_lider, hp_lider)}`\nRecompensa: 🎖️ {lider['insignia']}", inline=True)
+    embed.set_image(url=lider["imagem"])
+    if pokemon_lider.get("sprite"):
+        embed.set_thumbnail(url=pokemon_lider["sprite"])
+    ataques_jogador = await buscar_ataques_reais(meu_pokemon[1])
+    ataques_lider = await buscar_ataques_reais(pokemon_lider["nome"])
+    view = BatalhaGinasioView(interaction.user, meu_pokemon, meu_info, lider, pokemon_lider, ataques_jogador, ataques_lider)
+    await interaction.followup.send(embed=embed, view=view)
+
 @bot.tree.command(name="saldo", description="Mostra seu saldo de moedas.")
 async def saldo(interaction: discord.Interaction):
     moedas = saldo_usuario(interaction.user.id)
@@ -1249,6 +1507,32 @@ async def saldo(interaction: discord.Interaction):
 async def spawn_teste(interaction: discord.Interaction):
     await interaction.response.send_message("🌿 Gerando um Pokémon selvagem...", ephemeral=True)
     await enviar_spawn(interaction.channel)
+
+
+@tasks.loop(minutes=60)
+async def spawn_ginasio_automatico():
+    await bot.wait_until_ready()
+    canal = encontrar_canal_spawn()
+    if not canal:
+        return
+    if random.randint(1, 100) > 35:
+        return
+    lider = random.choice(LIDERES_GINASIO)
+    lider_ginasio_atual["canal_id"] = canal.id
+    lider_ginasio_atual["lider"] = lider
+    lider_ginasio_atual["criado_em"] = time.time()
+    embed = discord.Embed(
+        title="🏆 Um Líder de Ginásio apareceu!",
+        description=(
+            f"**{lider['nome']}**, especialista em tipo **{lider['tipo_pt']}**, quer batalhar!\n\n"
+            f"Use `/batalhar_ginasio` para desafiar.\n"
+            f"Se vencer, você ganha: **{lider['insignia']}** 🎖️"
+        ),
+        color=discord.Color.gold()
+    )
+    embed.add_field(name="Pokémon principal", value=f"**{lider['pokemon'].title()}** Nv. {lider['nivel']}", inline=True)
+    embed.set_image(url=lider["imagem"])
+    await canal.send(embed=embed)
 
 # ===== KEEP ALIVE RENDER =====
 app = Flask(__name__)
