@@ -1,7 +1,6 @@
 import os
 import random
 import asyncio
-import sqlite3
 import aiohttp
 import time
 import discord
@@ -20,7 +19,12 @@ from database import (
     primeiro_pokemon,
     saldo_usuario,
     usuario_tem_inicial,
-    marcar_inicial_escolhido
+    marcar_inicial_escolhido,
+    conectar,
+    definir_pokemon_ativo,
+    pokemon_ativo as pokemon_ativo_banco,
+    adicionar_insignia,
+    listar_insignias as listar_insignias_banco
 )
 
 from pokemon_api import (
@@ -452,56 +456,52 @@ def pokemon_dict_para_tuple(pokemon, nivel):
 
 
 
-def conectar_main():
-    return sqlite3.connect("pokebot.db")
-
-
 def listar_pokemons_com_id(discord_id: int):
-    conn = conectar_main()
+    conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
     SELECT id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em
     FROM pokemons_capturados
-    WHERE discord_id = ?
+    WHERE discord_id = %s
     ORDER BY id ASC
     LIMIT 25
     """, (str(discord_id),))
+
     dados = cursor.fetchall()
+    cursor.close()
     conn.close()
     return dados
 
 
 def buscar_pokemon_por_id(discord_id: int, pokemon_id: int):
-    conn = conectar_main()
+    conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
     SELECT id, nome, nivel, hp, ataque, defesa, velocidade
     FROM pokemons_capturados
-    WHERE discord_id = ? AND id = ?
+    WHERE discord_id = %s AND id = %s
     LIMIT 1
     """, (str(discord_id), pokemon_id))
+
     dados = cursor.fetchone()
+    cursor.close()
     conn.close()
     return dados
 
 
 def pokemon_ativo_ou_primeiro(discord_id: int):
-    pokemon_id = pokemon_ativo_usuarios.get(discord_id)
-    if pokemon_id:
-        pokemon = buscar_pokemon_por_id(discord_id, pokemon_id)
-        if pokemon:
-            return pokemon
-    return primeiro_pokemon(discord_id)
+    return pokemon_ativo_banco(discord_id)
 
 
 def salvar_insignia(discord_id: int, insignia: str):
-    if discord_id not in insignias_usuarios:
-        insignias_usuarios[discord_id] = set()
-    insignias_usuarios[discord_id].add(insignia)
+    adicionar_insignia(discord_id, insignia)
 
 
 def listar_insignias(discord_id: int):
-    return sorted(list(insignias_usuarios.get(discord_id, set())))
+    dados = listar_insignias_banco(discord_id)
+    return [item[0] for item in dados]
 
 
 async def buscar_ataques_reais(nome_pokemon: str, limite: int = 4):
@@ -1127,43 +1127,29 @@ async def iniciar(interaction: discord.Interaction):
         )
         return
 
-    intro = discord.Embed(
-        title="👋 Bem-vindo ao mundo dos Pokémon!",
+    embed = discord.Embed(
+        title="🎒 Escolha seu Pokémon inicial",
         description=(
-            "Para começar, escolha um Pokémon inicial usando:\n"
-            "`/escolher pokemon:nome_do_pokemon`\n\n"
-            "Exemplo:\n"
-            "`/escolher pokemon:charmander`\n\n"
-            "Abaixo estão todos os iniciais disponíveis:"
+            "Use `/escolher pokemon:nome` para escolher seu inicial.\n"
+            "Exemplo: `/escolher pokemon:charmander`\n\n"
+            "Para ver imagem e detalhes de algum Pokémon, use `/info nome`."
         ),
         color=discord.Color.from_rgb(255, 105, 180)
     )
 
-    intro.set_image(
-        url="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/25.png"
-    )
-
-    await interaction.followup.send(embed=intro, ephemeral=True)
-
     for grupo in INICIAIS_VISUAL:
-        embeds = []
-
+        linhas = []
         for nome, imagem in grupo["pokemons"]:
             nome_limpo = nome.split(" ", 1)[1].lower()
+            linhas.append(f"{nome} → `/escolher pokemon:{nome_limpo}`")
 
-            embed = discord.Embed(
-                title=grupo["titulo"],
-                description=(
-                    f"**{nome}**\n"
-                    f"Use `/escolher pokemon:{nome_limpo}`"
-                ),
-                color=discord.Color.from_rgb(255, 105, 180)
-            )
+        embed.add_field(
+            name=grupo["titulo"],
+            value="\n".join(linhas),
+            inline=False
+        )
 
-            embed.set_image(url=imagem)
-            embeds.append(embed)
-
-        await interaction.followup.send(embeds=embeds, ephemeral=True)
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="escolher", description="Escolha seu Pokémon inicial.")
@@ -1572,21 +1558,35 @@ async def batalhar_npc(interaction: discord.Interaction):
 @bot.tree.command(name="selecionar", description="Escolhe qual Pokémon você vai usar nas batalhas.")
 @app_commands.describe(indice="Número do Pokémon na sua lista do /pokemon")
 async def selecionar(interaction: discord.Interaction, indice: int):
+    await interaction.response.defer(ephemeral=True)
+
     pokemons = listar_pokemons_com_id(interaction.user.id)
     if not pokemons:
-        await interaction.response.send_message("❌ Você ainda não tem Pokémon.", ephemeral=True)
+        await interaction.followup.send("❌ Você ainda não tem Pokémon.", ephemeral=True)
         return
+
     if indice < 1 or indice > len(pokemons):
-        await interaction.response.send_message("❌ Índice inválido. Use `/pokemon` para ver sua lista.", ephemeral=True)
+        await interaction.followup.send("❌ Índice inválido. Use `/pokemon` para ver sua lista.", ephemeral=True)
         return
+
     escolhido = pokemons[indice - 1]
     pokemon_id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = escolhido
-    pokemon_ativo_usuarios[interaction.user.id] = pokemon_id
+
+    if not definir_pokemon_ativo(interaction.user.id, pokemon_id):
+        await interaction.followup.send("❌ Não consegui selecionar esse Pokémon.", ephemeral=True)
+        return
+
     dados = await buscar_pokemon(nome)
-    embed = discord.Embed(title="✅ Pokémon selecionado!", description=f"Você escolheu **{nome.title()}** Nv. {nivel} para batalhar.", color=discord.Color.green())
+    embed = discord.Embed(
+        title="✅ Pokémon selecionado!",
+        description=f"Você escolheu **{nome.title()}** Nv. {nivel} para batalhar.",
+        color=discord.Color.green()
+    )
+
     if dados and dados.get("sprite"):
         embed.set_thumbnail(url=dados["sprite"])
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @bot.tree.command(name="insignias", description="Mostra suas insígnias de ginásio.")
