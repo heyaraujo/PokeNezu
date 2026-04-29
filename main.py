@@ -485,40 +485,69 @@ def listar_insignias(discord_id: int):
     return sorted(list(insignias_usuarios.get(discord_id, set())))
 
 
+cache_ataques = {}
+
 async def buscar_ataques_reais(nome_pokemon: str, limite: int = 4):
-    url = f"https://pokeapi.co/api/v2/pokemon/{nome_pokemon.lower()}"
+    nome_pokemon = nome_pokemon.lower()
+
+    if nome_pokemon in cache_ataques:
+        return cache_ataques[nome_pokemon]
+
+    url = f"https://pokeapi.co/api/v2/pokemon/{nome_pokemon}"
     ataques = []
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as resp:
                 if resp.status != 200:
                     return ATAQUES[:limite]
+
                 dados = await resp.json()
+
             movimentos = dados.get("moves", [])
             random.shuffle(movimentos)
+
             for move_item in movimentos:
                 move_url = move_item["move"]["url"]
+
                 async with session.get(move_url) as move_resp:
                     if move_resp.status != 200:
                         continue
+
                     move_data = await move_resp.json()
+
                 poder = move_data.get("power")
                 tipo = move_data.get("type", {}).get("name", "normal")
                 nome = move_data.get("name", "ataque").replace("-", " ").title()
+
                 if not poder:
                     continue
+
                 status = None
                 efeito = (move_data.get("effect_entries") or [{}])[0].get("effect", "").lower()
+
                 if "burn" in efeito:
                     status = "queimar"
                 elif "paralyze" in efeito or "paralysis" in efeito:
                     status = "paralisar"
-                ataques.append({"nome": nome[:80], "tipo": tipo, "poder": min(int(poder), 120), "status": status})
+
+                ataques.append({
+                    "nome": nome[:80],
+                    "tipo": tipo,
+                    "poder": min(int(poder), 120),
+                    "status": status
+                })
+
                 if len(ataques) >= limite:
                     break
+
     except Exception:
         return ATAQUES[:limite]
-    return ataques[:limite] if ataques else ATAQUES[:limite]
+
+    ataques_final = ataques[:limite] if ataques else ATAQUES[:limite]
+    cache_ataques[nome_pokemon] = ataques_final
+
+    return ataques_final
 
 
 def ataques_para_select_lista(ataques):
@@ -1064,33 +1093,38 @@ async def iniciar(interaction: discord.Interaction):
             "Para começar, escolha um Pokémon inicial usando:\n"
             "`/escolher pokemon:nome_do_pokemon`\n\n"
             "Exemplo:\n"
-            "`/escolher pokemon:charmander`"
+            "`/escolher pokemon:charmander`\n\n"
+            "Abaixo estão todos os iniciais disponíveis:"
         ),
         color=discord.Color.from_rgb(255, 105, 180)
     )
 
     intro.set_image(
-        url="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/4.png"
+        url="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/25.png"
     )
 
     embeds.append(intro)
 
     for grupo in INICIAIS_VISUAL:
-        texto = ""
-
         for nome, imagem in grupo["pokemons"]:
-            texto += f"{nome} — [Ver imagem]({imagem})\n"
+            nome_limpo = nome.split(" ", 1)[1].lower()
 
-        embed = discord.Embed(
-            title=grupo["titulo"],
-            description=texto,
-            color=discord.Color.from_rgb(255, 105, 180)
-        )
+            embed = discord.Embed(
+                title=grupo["titulo"],
+                description=(
+                    f"**{nome}**\n"
+                    f"Use `/escolher pokemon:{nome_limpo}`"
+                ),
+                color=discord.Color.from_rgb(255, 105, 180)
+            )
 
-        embed.set_thumbnail(url=grupo["pokemons"][0][1])
-        embeds.append(embed)
+            embed.set_image(url=imagem)
+            embeds.append(embed)
 
-    await interaction.response.send_message(embeds=embeds)
+    await interaction.response.send_message(embeds=embeds[:10])
+
+    for i in range(10, len(embeds), 10):
+        await interaction.followup.send(embeds=embeds[i:i + 10])
 
 
 @bot.tree.command(name="escolher", description="Escolha seu Pokémon inicial.")
