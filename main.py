@@ -4,6 +4,9 @@ import asyncio
 import aiohttp
 import time
 import discord
+from PIL import Image, ImageDraw
+import requests
+from io import BytesIO
 from flask import Flask
 from threading import Thread
 from discord import app_commands
@@ -747,7 +750,23 @@ class BatalhaNPCView(discord.ui.View):
             for item in self.children:
                 item.disabled = True
 
-        await interaction.response.edit_message(embed=embed, view=self)
+        caminho = gerar_imagem_batalha(
+            {"sprite": self.meu_info.get("sprite"), "nome": meu_nome},
+            {"sprite": self.pokemon_npc.get("sprite"), "nome": self.pokemon_npc.get("nome", "NPC")},
+            self.hp_meu,
+            self.hp_npc,
+            self.hp_meu_max,
+            self.hp_npc_max
+        )
+
+        file = discord.File(caminho, filename="batalha.png")
+        embed.set_image(url="attachment://batalha.png")
+
+        await interaction.response.edit_message(
+            embed=embed,
+            attachments=[file],
+            view=self
+        )
 
 
 
@@ -1299,8 +1318,9 @@ async def pokemon(interaction: discord.Interaction):
         poder = calcular_poder((0, nome, nivel, hp, ataque, defesa, velocidade))
 
         linhas.append(
-            f"`{i:>4}` {emoji} **L{nivel} {nome.title()}**  •  "
-            f"HP `{hp}`  ATQ `{ataque}`  DEF `{defesa}`  •  Poder `{poder}`"
+            f"`{i:>4}` {emoji} **L{nivel} {nome.title()}**\n"
+            f"└ ❤️ `{hp}`  ⚔️ `{ataque}`  🛡️ `{defesa}`  ⚡ `{velocidade}`\n"
+            f"└ 💪 Poder `{poder}`"
         )
 
     embed = discord.Embed(
@@ -1506,7 +1526,19 @@ class EscolherPokemonNPCView(discord.ui.View):
             ataques_npc=ataques_npc
         )
 
-        await interaction.edit_original_response(embed=embed, view=view)
+        caminho = gerar_imagem_batalha(
+            {"sprite": meu_info.get("sprite"), "nome": meu_pokemon[1]},
+            {"sprite": pokemon_npc.get("sprite"), "nome": pokemon_npc.get("nome", "NPC")},
+            hp_meu,
+            hp_npc,
+            hp_meu,
+            hp_npc
+        )
+
+        file = discord.File(caminho, filename="batalha.png")
+        embed.set_image(url="attachment://batalha.png")
+
+        await interaction.edit_original_response(embed=embed, attachments=[file], view=view)
 
 
 @bot.tree.command(name="batalhar_npc", description="Escolha um Pokémon e batalhe contra um NPC.")
@@ -1643,6 +1675,64 @@ async def spawn_teste(interaction: discord.Interaction):
     await interaction.response.send_message("🌿 Gerando um Pokémon selvagem...", ephemeral=True)
     await enviar_spawn(interaction.channel)
 
+def gerar_imagem_batalha(pokemon1, pokemon2, hp1, hp2, hp1_max, hp2_max):
+    largura, altura = 700, 380
+
+    img = Image.new("RGB", (largura, altura), (132, 204, 134))
+    draw = ImageDraw.Draw(img)
+
+    # chão estilo batalha
+    draw.ellipse((45, 250, 300, 330), fill=(96, 166, 92), outline=(72, 130, 70), width=3)
+    draw.ellipse((390, 105, 650, 185), fill=(96, 166, 92), outline=(72, 130, 70), width=3)
+
+    def baixar_sprite(url, tamanho):
+        if not url:
+            return None
+        try:
+            resposta = requests.get(url, timeout=8)
+            if resposta.status_code != 200:
+                return None
+            sprite = Image.open(BytesIO(resposta.content)).convert("RGBA")
+            return sprite.resize((tamanho, tamanho))
+        except Exception:
+            return None
+
+    p1_img = baixar_sprite(pokemon1.get("sprite"), 150)
+    p2_img = baixar_sprite(pokemon2.get("sprite"), 150)
+
+    if p1_img:
+        img.paste(p1_img, (105, 170), p1_img)
+
+    if p2_img:
+        img.paste(p2_img, (450, 35), p2_img)
+
+    def barra_hp_visual(x, y, hp, hp_max, nome):
+        hp_max = max(1, hp_max)
+        hp = max(0, hp)
+        proporcao = max(0, min(1, hp / hp_max))
+
+        draw.rounded_rectangle((x, y, x + 230, y + 62), radius=10, fill=(245, 245, 220), outline=(40, 40, 40), width=3)
+        draw.text((x + 12, y + 8), nome[:18].title(), fill=(20, 20, 20))
+        draw.text((x + 12, y + 33), f"HP {hp}/{hp_max}", fill=(20, 20, 20))
+
+        barra_x = x + 85
+        barra_y = y + 38
+        barra_largura = 125
+        cor = (40, 210, 80)
+        if proporcao <= 0.5:
+            cor = (235, 190, 40)
+        if proporcao <= 0.2:
+            cor = (220, 60, 50)
+
+        draw.rounded_rectangle((barra_x, barra_y, barra_x + barra_largura, barra_y + 12), radius=5, fill=(70, 70, 70))
+        draw.rounded_rectangle((barra_x, barra_y, barra_x + int(barra_largura * proporcao), barra_y + 12), radius=5, fill=cor)
+
+    barra_hp_visual(35, 35, hp2, hp2_max, pokemon2.get("nome", "NPC"))
+    barra_hp_visual(425, 275, hp1, hp1_max, pokemon1.get("nome", "Você"))
+
+    caminho = "batalha.png"
+    img.save(caminho)
+    return caminho
 
 @tasks.loop(minutes=60)
 async def spawn_ginasio_automatico():
