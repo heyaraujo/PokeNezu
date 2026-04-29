@@ -1275,50 +1275,43 @@ async def capturar(interaction: discord.Interaction, nome: str):
     await interaction.followup.send(embed=embed)
 
 
-@bot.tree.command(name="pokemon", description="Mostra seus últimos Pokémon capturados.")
+@bot.tree.command(name="pokemon", description="Mostra seus Pokémon capturados.")
 async def pokemon(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    try:
-        dados = listar_pokemons(interaction.user.id)
+    dados = listar_pokemons(interaction.user.id)
 
-        if not dados:
-            await interaction.followup.send(
-                "📦 Você ainda não tem nenhum Pokémon. Use `/iniciar` para começar.",
-                ephemeral=True
-            )
-            return
-
-        linhas = []
-
-        for i, item in enumerate(dados, start=1):
-            # Aceita tanto retorno com 8 colunas quanto com 9 colunas
-            if len(item) >= 8:
-                nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = item[:8]
-            else:
-                nome, nivel, hp, ataque, defesa, velocidade, inicial = item[:7]
-                criado_em = None
-
-            tag = "⭐ Inicial" if inicial else "🌿 Capturado"
-            linhas.append(
-                f"**{i}. {nome.title()}** — Nv. {nivel} | "
-                f"HP {hp} | ATQ {ataque} | DEF {defesa} | {tag}"
-            )
-
-        embed = discord.Embed(
-            title=f"📦 Pokémon de {interaction.user.display_name}",
-            description="\n".join(linhas[:25]),
-            color=discord.Color.purple()
-        )
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    except Exception as erro:
-        print(f"Erro no comando /pokemon: {erro}")
+    if not dados:
         await interaction.followup.send(
-            "❌ Deu erro ao carregar seus Pokémon. Veja o console/Render Logs.",
+            "📦 Você ainda não tem nenhum Pokémon. Use `/iniciar` para começar.",
             ephemeral=True
         )
+        return
+
+    linhas = []
+
+    for i, item in enumerate(dados[:15], start=1):
+        nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = item[:8]
+
+        pokemon_info = await buscar_pokemon(nome)
+        emoji = "⭐" if inicial else "📦"
+
+        poder = calcular_poder((0, nome, nivel, hp, ataque, defesa, velocidade))
+
+        linhas.append(
+            f"`{i:>4}` {emoji} **L{nivel} {nome.title()}**  •  "
+            f"HP `{hp}`  ATQ `{ataque}`  DEF `{defesa}`  •  Poder `{poder}`"
+        )
+
+    embed = discord.Embed(
+        title="📦 PokéNezu Pokémon",
+        description="\n".join(linhas),
+        color=discord.Color.red()
+    )
+
+    embed.set_footer(text="Use /selecionar indice:número para escolher quem vai batalhar.")
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="info", description="Mostra informações de um Pokémon.")
 @app_commands.describe(nome="Nome do Pokémon")
