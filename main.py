@@ -1067,6 +1067,22 @@ async def on_ready():
         spawn_ginasio_automatico.start()
 
 
+
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, erro: app_commands.AppCommandError):
+    print(f"Erro em slash command: {erro}")
+
+    mensagem = "❌ Ocorreu um erro ao executar esse comando. Veja o console/Render Logs."
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(mensagem, ephemeral=True)
+        else:
+            await interaction.response.send_message(mensagem, ephemeral=True)
+    except Exception as erro_envio:
+        print(f"Erro ao enviar mensagem de erro: {erro_envio}")
+
+
 @tasks.loop(minutes=TEMPO_SPAWN_MINUTOS)
 async def spawn_automatico():
     await bot.wait_until_ready()
@@ -1276,30 +1292,48 @@ async def capturar(interaction: discord.Interaction, nome: str):
 
 @bot.tree.command(name="pokemon", description="Mostra seus últimos Pokémon capturados.")
 async def pokemon(interaction: discord.Interaction):
-    dados = listar_pokemons(interaction.user.id)
+    await interaction.response.defer(ephemeral=True)
 
-    if not dados:
-        await interaction.response.send_message(
-            "📦 Você ainda não tem nenhum Pokémon. Use `/iniciar` para começar.",
+    try:
+        dados = listar_pokemons(interaction.user.id)
+
+        if not dados:
+            await interaction.followup.send(
+                "📦 Você ainda não tem nenhum Pokémon. Use `/iniciar` para começar.",
+                ephemeral=True
+            )
+            return
+
+        linhas = []
+
+        for i, item in enumerate(dados, start=1):
+            # Aceita tanto retorno com 8 colunas quanto com 9 colunas
+            if len(item) >= 8:
+                nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = item[:8]
+            else:
+                nome, nivel, hp, ataque, defesa, velocidade, inicial = item[:7]
+                criado_em = None
+
+            tag = "⭐ Inicial" if inicial else "🌿 Capturado"
+            linhas.append(
+                f"**{i}. {nome.title()}** — Nv. {nivel} | "
+                f"HP {hp} | ATQ {ataque} | DEF {defesa} | {tag}"
+            )
+
+        embed = discord.Embed(
+            title=f"📦 Pokémon de {interaction.user.display_name}",
+            description="\n".join(linhas[:25]),
+            color=discord.Color.purple()
+        )
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    except Exception as erro:
+        print(f"Erro no comando /pokemon: {erro}")
+        await interaction.followup.send(
+            "❌ Deu erro ao carregar seus Pokémon. Veja o console/Render Logs.",
             ephemeral=True
         )
-        return
-
-    linhas = []
-
-    for i, item in enumerate(dados, start=1):
-        nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = item
-        tag = "⭐ Inicial" if inicial else "🌿 Capturado"
-        linhas.append(f"**{i}. {nome.title()}** — Nv. {nivel} | {tag}")
-
-    embed = discord.Embed(
-        title=f"📦 Pokémon de {interaction.user.display_name}",
-        description="\n".join(linhas),
-        color=discord.Color.purple()
-    )
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
 
 @bot.tree.command(name="info", description="Mostra informações de um Pokémon.")
 @app_commands.describe(nome="Nome do Pokémon")
@@ -1494,27 +1528,47 @@ class EscolherPokemonNPCView(discord.ui.View):
             ataques_npc=ataques_npc
         )
 
-        await interaction.message.edit(embed=embed, view=view)
+        await interaction.edit_original_response(embed=embed, view=view)
 
 
 @bot.tree.command(name="batalhar_npc", description="Escolha um Pokémon e batalhe contra um NPC.")
 async def batalhar_npc(interaction: discord.Interaction):
-    pokemons = listar_pokemons_com_id(interaction.user.id)
+    await interaction.response.defer(ephemeral=True)
 
-    if not pokemons:
-        await interaction.response.send_message("❌ Você ainda não tem Pokémon. Use `/iniciar` primeiro.", ephemeral=True)
-        return
+    try:
+        pokemons = listar_pokemons_com_id(interaction.user.id)
 
-    embed = discord.Embed(title="🎒 Escolha seu Pokémon", description="Selecione abaixo qual Pokémon você quer usar contra o NPC.", color=discord.Color.blue())
+        if not pokemons:
+            await interaction.followup.send(
+                "❌ Você ainda não tem Pokémon. Use `/iniciar` primeiro.",
+                ephemeral=True
+            )
+            return
 
-    for i, p in enumerate(pokemons, start=1):
-        pokemon_id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = p
-        tag = "⭐ Inicial" if inicial else "🌿 Capturado"
-        embed.add_field(name=f"{i}. {nome.title()}", value=f"Nv. {nivel} | HP {hp} | ATQ {ataque} | DEF {defesa} | {tag}", inline=False)
+        embed = discord.Embed(
+            title="🎒 Escolha seu Pokémon",
+            description="Selecione abaixo qual Pokémon você quer usar contra o NPC.",
+            color=discord.Color.blue()
+        )
 
-    view = EscolherPokemonNPCView(interaction.user, pokemons)
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        for i, p in enumerate(pokemons[:25], start=1):
+            pokemon_id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = p
+            tag = "⭐ Inicial" if inicial else "🌿 Capturado"
+            embed.add_field(
+                name=f"{i}. {nome.title()}",
+                value=f"Nv. {nivel} | HP {hp} | ATQ {ataque} | DEF {defesa} | {tag}",
+                inline=False
+            )
 
+        view = EscolherPokemonNPCView(interaction.user, pokemons[:25])
+        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+
+    except Exception as erro:
+        print(f"Erro no comando /batalhar_npc: {erro}")
+        await interaction.followup.send(
+            "❌ Deu erro ao iniciar a batalha. Veja o console/Render Logs.",
+            ephemeral=True
+        )
 
 @bot.tree.command(name="selecionar", description="Escolhe qual Pokémon você vai usar nas batalhas.")
 @app_commands.describe(indice="Número do Pokémon na sua lista do /pokemon")
