@@ -1,6 +1,9 @@
 import os
 import random
 import asyncio
+import sqlite3
+import aiohttp
+import time
 import discord
 from flask import Flask
 from threading import Thread
@@ -44,6 +47,22 @@ pokemon_atual = {
     "pokemon": None,
     "nivel": None
 }
+
+pokemon_ativo_usuarios = {}
+insignias_usuarios = {}
+cache_ataques = {}
+
+lider_ginasio_atual = {
+    "canal_id": None,
+    "lider": None,
+    "criado_em": None
+}
+
+LIDERES_GINASIO = [
+    {"nome": "Brock", "tipo_pt": "Pedra", "pokemon": "onix", "nivel": 10, "insignia": "Insígnia da Rocha", "imagem": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/95.png"},
+    {"nome": "Misty", "tipo_pt": "Água", "pokemon": "starmie", "nivel": 12, "insignia": "Insígnia da Cascata", "imagem": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/121.png"},
+    {"nome": "Lt. Surge", "tipo_pt": "Elétrico", "pokemon": "raichu", "nivel": 14, "insignia": "Insígnia do Trovão", "imagem": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/26.png"}
+]
 
 
 INICIAIS_VISUAL = [
@@ -485,8 +504,6 @@ def listar_insignias(discord_id: int):
     return sorted(list(insignias_usuarios.get(discord_id, set())))
 
 
-cache_ataques = {}
-
 async def buscar_ataques_reais(nome_pokemon: str, limite: int = 4):
     nome_pokemon = nome_pokemon.lower()
 
@@ -570,6 +587,8 @@ class BatalhaNPCView(discord.ui.View):
         self.pokemon_npc = pokemon_npc
         self.nivel_npc = nivel_npc
         self.nome_npc = nome_npc
+        self.ataques_jogador = ataques_jogador or ATAQUES[:4]
+        self.ataques_npc = ataques_npc or ATAQUES[:4]
 
         self.hp_meu_max = hp_batalha(meu_pokemon)
         self.hp_npc_max = hp_batalha(pokemon_dict_para_tuple(pokemon_npc, nivel_npc))
@@ -596,8 +615,8 @@ class BatalhaNPCView(discord.ui.View):
             await interaction.response.send_message("❌ Essa batalha não é sua.", ephemeral=True)
             return
 
-        ataque_jogador = ataque_por_nome(self.select.values[0])
-        ataque_npc = random.choice(ATAQUES)
+        ataque_jogador = ataque_por_nome_lista(self.select.values[0], self.ataques_jogador)
+        ataque_npc = random.choice(self.ataques_npc)
 
         meu_id, meu_nome, meu_nivel, meu_hp, meu_ataque, meu_defesa, meu_vel = self.meu_pokemon
 
@@ -827,6 +846,8 @@ class BatalhaPVPView(discord.ui.View):
         self.p2 = p2
         self.p1_info = p1_info
         self.p2_info = p2_info
+        self.ataques_p1 = ataques_p1 or ATAQUES[:4]
+        self.ataques_p2 = ataques_p2 or ATAQUES[:4]
 
         self.hp1_max = hp_batalha(p1)
         self.hp2_max = hp_batalha(p2)
@@ -1041,6 +1062,9 @@ async def on_ready():
 
     if not spawn_automatico.is_running():
         spawn_automatico.start()
+
+    if not spawn_ginasio_automatico.is_running():
+        spawn_ginasio_automatico.start()
 
 
 @tasks.loop(minutes=TEMPO_SPAWN_MINUTOS)
@@ -1372,93 +1396,124 @@ async def batalhar(interaction: discord.Interaction, usuario: discord.Member):
     await interaction.followup.send(embed=embed, view=view)
 
 
-@bot.tree.command(name="batalhar_npc", description="Batalhe contra um NPC com ataques, status e vantagem de tipo.")
+class EscolherPokemonNPCView(discord.ui.View):
+    def __init__(self, jogador, pokemons):
+        super().__init__(timeout=120)
+        self.jogador = jogador
+        self.pokemons = pokemons
+
+        options = []
+        for index, p in enumerate(pokemons, start=1):
+            pokemon_id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = p
+            options.append(
+                discord.SelectOption(
+                    label=f"{index}. {nome.title()}",
+                    description=f"Nv {nivel} | HP {hp} | ATQ {ataque} | DEF {defesa}",
+                    value=str(pokemon_id)
+                )
+            )
+
+        self.select = discord.ui.Select(
+            placeholder="Escolha o Pokémon para batalhar",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+        self.select.callback = self.escolher_pokemon
+        self.add_item(self.select)
+
+    async def escolher_pokemon(self, interaction: discord.Interaction):
+        if interaction.user.id != self.jogador.id:
+            await interaction.response.send_message("❌ Esse menu não é seu.", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+
+        pokemon_id = int(self.select.values[0])
+        meu_pokemon = buscar_pokemon_por_id(interaction.user.id, pokemon_id)
+
+        if not meu_pokemon:
+            await interaction.followup.send("❌ Pokémon não encontrado.", ephemeral=True)
+            return
+
+        meu_info = await buscar_pokemon(meu_pokemon[1])
+        if not meu_info:
+            await interaction.followup.send("❌ Não consegui buscar os dados do seu Pokémon.", ephemeral=True)
+            return
+
+        pokemon_npc = await pokemon_aleatorio()
+        if not pokemon_npc:
+            await interaction.followup.send("❌ Não consegui gerar o Pokémon do NPC.", ephemeral=True)
+            return
+
+        nomes_npc = ["Treinador João", "Treinadora Ana", "Caçador Bruno", "Líder Pedro", "Jovem Lucas", "Rival Misterioso"]
+        nome_npc = random.choice(nomes_npc)
+        nivel_npc = random.randint(max(1, meu_pokemon[2] - 3), meu_pokemon[2] + 3)
+
+        hp_meu = hp_batalha(meu_pokemon)
+        hp_npc = hp_batalha(pokemon_dict_para_tuple(pokemon_npc, nivel_npc))
+
+        embed = discord.Embed(title="⚔️ Batalha contra NPC!", description="Escolha um ataque no menu abaixo.", color=discord.Color.red())
+        embed.add_field(
+            name=f"{interaction.user.display_name}",
+            value=(
+                f"**{meu_pokemon[1].title()}** Nv. {meu_pokemon[2]}\n"
+                f"❤️ `{hp_meu}/{hp_meu}`\n"
+                f"`{barra_hp(hp_meu, hp_meu)}`\n"
+                f"Status: ✅ Normal"
+            ),
+            inline=True
+        )
+        embed.add_field(
+            name=nome_npc,
+            value=(
+                f"**{pokemon_npc['nome'].title()}** Nv. {nivel_npc}\n"
+                f"❤️ `{hp_npc}/{hp_npc}`\n"
+                f"`{barra_hp(hp_npc, hp_npc)}`\n"
+                f"Status: ✅ Normal"
+            ),
+            inline=True
+        )
+
+        if pokemon_npc.get("sprite"):
+            embed.set_thumbnail(url=pokemon_npc["sprite"])
+        elif pokemon_npc.get("imagem"):
+            embed.set_thumbnail(url=pokemon_npc["imagem"])
+
+        ataques_jogador = await buscar_ataques_reais(meu_pokemon[1])
+        ataques_npc = await buscar_ataques_reais(pokemon_npc["nome"])
+
+        view = BatalhaNPCView(
+            jogador=interaction.user,
+            meu_pokemon=meu_pokemon,
+            meu_info=meu_info,
+            pokemon_npc=pokemon_npc,
+            nivel_npc=nivel_npc,
+            nome_npc=nome_npc,
+            ataques_jogador=ataques_jogador,
+            ataques_npc=ataques_npc
+        )
+
+        await interaction.message.edit(embed=embed, view=view)
+
+
+@bot.tree.command(name="batalhar_npc", description="Escolha um Pokémon e batalhe contra um NPC.")
 async def batalhar_npc(interaction: discord.Interaction):
-    await interaction.response.defer()
+    pokemons = listar_pokemons_com_id(interaction.user.id)
 
-    meu_pokemon = pokemon_ativo_ou_primeiro(interaction.user.id)
-
-    if not meu_pokemon:
-        await interaction.followup.send(
-            "❌ Você ainda não tem Pokémon. Use `/iniciar` primeiro.",
-            ephemeral=True
-        )
+    if not pokemons:
+        await interaction.response.send_message("❌ Você ainda não tem Pokémon. Use `/iniciar` primeiro.", ephemeral=True)
         return
 
-    meu_info = await buscar_pokemon(meu_pokemon[1])
+    embed = discord.Embed(title="🎒 Escolha seu Pokémon", description="Selecione abaixo qual Pokémon você quer usar contra o NPC.", color=discord.Color.blue())
 
-    if not meu_info:
-        await interaction.followup.send("❌ Não consegui buscar os dados do seu Pokémon.", ephemeral=True)
-        return
+    for i, p in enumerate(pokemons, start=1):
+        pokemon_id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = p
+        tag = "⭐ Inicial" if inicial else "🌿 Capturado"
+        embed.add_field(name=f"{i}. {nome.title()}", value=f"Nv. {nivel} | HP {hp} | ATQ {ataque} | DEF {defesa} | {tag}", inline=False)
 
-    pokemon_npc = await pokemon_aleatorio()
-
-    if not pokemon_npc:
-        await interaction.followup.send(
-            "❌ Não consegui gerar o Pokémon do NPC.",
-            ephemeral=True
-        )
-        return
-
-    nomes_npc = [
-        "Treinador João",
-        "Treinadora Ana",
-        "Caçador Bruno",
-        "Líder Pedro",
-        "Jovem Lucas",
-        "Rival Misterioso"
-    ]
-
-    nome_npc = random.choice(nomes_npc)
-    nivel_npc = random.randint(max(1, meu_pokemon[2] - 3), meu_pokemon[2] + 3)
-
-    embed = discord.Embed(
-        title="⚔️ Batalha contra NPC!",
-        description="Escolha um ataque no menu abaixo.",
-        color=discord.Color.red()
-    )
-
-    hp_meu = hp_batalha(meu_pokemon)
-    hp_npc = hp_batalha(pokemon_dict_para_tuple(pokemon_npc, nivel_npc))
-
-    embed.add_field(
-        name=f"{interaction.user.display_name}",
-        value=(
-            f"**{meu_pokemon[1].title()}** Nv. {meu_pokemon[2]}\n"
-            f"❤️ `{hp_meu}/{hp_meu}`\n"
-            f"`{barra_hp(hp_meu, hp_meu)}`\n"
-            f"Status: ✅ Normal"
-        ),
-        inline=True
-    )
-
-    embed.add_field(
-        name=nome_npc,
-        value=(
-            f"**{pokemon_npc['nome'].title()}** Nv. {nivel_npc}\n"
-            f"❤️ `{hp_npc}/{hp_npc}`\n"
-            f"`{barra_hp(hp_npc, hp_npc)}`\n"
-            f"Status: ✅ Normal"
-        ),
-        inline=True
-    )
-
-    if pokemon_npc["sprite"]:
-        embed.set_thumbnail(url=pokemon_npc["sprite"])
-    elif pokemon_npc["imagem"]:
-        embed.set_thumbnail(url=pokemon_npc["imagem"])
-
-    view = BatalhaNPCView(
-        jogador=interaction.user,
-        meu_pokemon=meu_pokemon,
-        meu_info=meu_info,
-        pokemon_npc=pokemon_npc,
-        nivel_npc=nivel_npc,
-        nome_npc=nome_npc
-    )
-
-    await interaction.followup.send(embed=embed, view=view)
-
+    view = EscolherPokemonNPCView(interaction.user, pokemons)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 @bot.tree.command(name="selecionar", description="Escolhe qual Pokémon você vai usar nas batalhas.")
