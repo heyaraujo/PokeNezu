@@ -4,7 +4,7 @@ import asyncio
 import aiohttp
 import time
 import discord
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import requests
 from io import BytesIO
 from flask import Flask
@@ -751,8 +751,8 @@ class BatalhaNPCView(discord.ui.View):
                 item.disabled = True
 
         caminho = gerar_imagem_batalha(
-            {"sprite": self.meu_info.get("sprite"), "nome": meu_nome},
-            {"sprite": self.pokemon_npc.get("sprite"), "nome": self.pokemon_npc.get("nome", "NPC")},
+            {"sprite": self.meu_info.get("sprite")},
+            {"sprite": self.pokemon_npc.get("sprite")},
             self.hp_meu,
             self.hp_npc,
             self.hp_meu_max,
@@ -762,11 +762,7 @@ class BatalhaNPCView(discord.ui.View):
         file = discord.File(caminho, filename="batalha.png")
         embed.set_image(url="attachment://batalha.png")
 
-        await interaction.response.edit_message(
-            embed=embed,
-            attachments=[file],
-            view=self
-        )
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
 
 
@@ -1294,6 +1290,71 @@ async def capturar(interaction: discord.Interaction, nome: str):
     await interaction.followup.send(embed=embed)
 
 
+
+
+def gerar_imagem_lista_pokemon(pokemons, usuario_nome="Treinador"):
+    largura = 760
+    linha_altura = 44
+    topo = 70
+    margem = 28
+    altura = max(180, topo + (len(pokemons) * linha_altura) + 35)
+
+    img = Image.new("RGB", (largura, altura), (47, 49, 56))
+    draw = ImageDraw.Draw(img)
+
+    # barra vermelha lateral estilo Pokétwo
+    draw.rectangle([0, 0, 8, altura], fill=(237, 74, 68))
+
+    try:
+        fonte_titulo = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
+        fonte_nome = ImageFont.truetype("DejaVuSans-Bold.ttf", 21)
+        fonte_texto = ImageFont.truetype("DejaVuSans.ttf", 20)
+        fonte_id = ImageFont.truetype("DejaVuSansMono.ttf", 19)
+    except Exception:
+        fonte_titulo = ImageFont.load_default()
+        fonte_nome = ImageFont.load_default()
+        fonte_texto = ImageFont.load_default()
+        fonte_id = ImageFont.load_default()
+
+    draw.text((margem, 22), f"PokéNezu Pokémon", fill=(245, 245, 245), font=fonte_titulo)
+
+    y = topo
+    for item in pokemons:
+        indice = item["indice"]
+        nome = item["nome"].title()
+        nivel = item["nivel"]
+        poder = item["poder"]
+        porcentagem = item["porcentagem"]
+        sprite = item.get("sprite")
+
+        # caixinha do índice
+        draw.rounded_rectangle([margem, y + 4, margem + 88, y + 36], radius=4, fill=(34, 36, 40))
+        draw.text((margem + 13, y + 9), str(indice), fill=(235, 235, 235), font=fonte_id)
+
+        # sprite pequeno
+        if sprite:
+            try:
+                resp = requests.get(sprite, timeout=5)
+                poke_img = Image.open(BytesIO(resp.content)).convert("RGBA").resize((36, 36))
+                img.paste(poke_img, (margem + 102, y + 1), poke_img)
+            except Exception:
+                pass
+
+        # texto principal
+        x_nome = margem + 148
+        draw.text((x_nome, y + 4), f"L{nivel} {nome}", fill=(255, 255, 255), font=fonte_nome)
+
+        draw.text((x_nome + 255, y + 5), "•", fill=(245, 245, 245), font=fonte_texto)
+        draw.text((x_nome + 292, y + 5), f"{porcentagem:.2f}%", fill=(230, 230, 230), font=fonte_texto)
+        draw.text((x_nome + 405, y + 5), "•", fill=(245, 245, 245), font=fonte_texto)
+        draw.text((x_nome + 442, y + 5), f"{poder:,} pc", fill=(230, 230, 230), font=fonte_texto)
+
+        y += linha_altura
+
+    caminho = f"pokemon_lista_{int(time.time())}.png"
+    img.save(caminho)
+    return caminho
+
 @bot.tree.command(name="pokemon", description="Mostra seus Pokémon capturados.")
 async def pokemon(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
@@ -1307,31 +1368,42 @@ async def pokemon(interaction: discord.Interaction):
         )
         return
 
-    linhas = []
+    itens_imagem = []
 
     for i, item in enumerate(dados[:15], start=1):
         nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = item[:8]
 
-        pokemon_info = await buscar_pokemon(nome)
-        emoji = "⭐" if inicial else "📦"
-
         poder = calcular_poder((0, nome, nivel, hp, ataque, defesa, velocidade))
+        porcentagem = min(99.99, max(1, round((poder / 350) * 100, 2)))
 
-        linhas.append(
-            f"`{i:>4}` {emoji} **L{nivel} {nome.title()}**\n"
-            f"└ ❤️ `{hp}`  ⚔️ `{ataque}`  🛡️ `{defesa}`  ⚡ `{velocidade}`\n"
-            f"└ 💪 Poder `{poder}`"
-        )
+        sprite = None
+        try:
+            info_pokemon = await buscar_pokemon(nome)
+            if info_pokemon:
+                sprite = info_pokemon.get("sprite") or info_pokemon.get("imagem")
+        except Exception:
+            sprite = None
+
+        itens_imagem.append({
+            "indice": i,
+            "nome": nome,
+            "nivel": nivel,
+            "poder": poder,
+            "porcentagem": porcentagem,
+            "sprite": sprite
+        })
+
+    caminho = gerar_imagem_lista_pokemon(itens_imagem, interaction.user.display_name)
+    arquivo = discord.File(caminho, filename="pokemon_lista.png")
 
     embed = discord.Embed(
-        title="📦 PokéNezu Pokémon",
-        description="\n".join(linhas),
+        title=f"📦 Pokémon de {interaction.user.display_name}",
+        description="Use `/selecionar indice:número` para escolher quem vai batalhar.",
         color=discord.Color.red()
     )
+    embed.set_image(url="attachment://pokemon_lista.png")
 
-    embed.set_footer(text="Use /selecionar indice:número para escolher quem vai batalhar.")
-
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, file=arquivo, ephemeral=True)
 
 @bot.tree.command(name="info", description="Mostra informações de um Pokémon.")
 @app_commands.describe(nome="Nome do Pokémon")
@@ -1526,19 +1598,7 @@ class EscolherPokemonNPCView(discord.ui.View):
             ataques_npc=ataques_npc
         )
 
-        caminho = gerar_imagem_batalha(
-            {"sprite": meu_info.get("sprite"), "nome": meu_pokemon[1]},
-            {"sprite": pokemon_npc.get("sprite"), "nome": pokemon_npc.get("nome", "NPC")},
-            hp_meu,
-            hp_npc,
-            hp_meu,
-            hp_npc
-        )
-
-        file = discord.File(caminho, filename="batalha.png")
-        embed.set_image(url="attachment://batalha.png")
-
-        await interaction.edit_original_response(embed=embed, attachments=[file], view=view)
+        await interaction.edit_original_response(embed=embed, view=view)
 
 
 @bot.tree.command(name="batalhar_npc", description="Escolha um Pokémon e batalhe contra um NPC.")
@@ -1676,64 +1736,40 @@ async def spawn_teste(interaction: discord.Interaction):
     await enviar_spawn(interaction.channel)
 
 def gerar_imagem_batalha(pokemon1, pokemon2, hp1, hp2, hp1_max, hp2_max):
-    largura, altura = 700, 380
+    largura, altura = 600, 300
 
-    img = Image.new("RGB", (largura, altura), (132, 204, 134))
+    img = Image.new("RGB", (largura, altura), (120, 200, 120))
     draw = ImageDraw.Draw(img)
 
-    # chão estilo batalha
-    draw.ellipse((45, 250, 300, 330), fill=(96, 166, 92), outline=(72, 130, 70), width=3)
-    draw.ellipse((390, 105, 650, 185), fill=(96, 166, 92), outline=(72, 130, 70), width=3)
+    try:
+        if pokemon1.get("sprite"):
+            sprite1 = requests.get(pokemon1["sprite"], timeout=5).content
+            p1_img = Image.open(BytesIO(sprite1)).resize((120, 120)).convert("RGBA")
+            img.paste(p1_img, (80, 150), p1_img)
 
-    def baixar_sprite(url, tamanho):
-        if not url:
-            return None
-        try:
-            resposta = requests.get(url, timeout=8)
-            if resposta.status_code != 200:
-                return None
-            sprite = Image.open(BytesIO(resposta.content)).convert("RGBA")
-            return sprite.resize((tamanho, tamanho))
-        except Exception:
-            return None
+        if pokemon2.get("sprite"):
+            sprite2 = requests.get(pokemon2["sprite"], timeout=5).content
+            p2_img = Image.open(BytesIO(sprite2)).resize((120, 120)).convert("RGBA")
+            img.paste(p2_img, (400, 50), p2_img)
 
-    p1_img = baixar_sprite(pokemon1.get("sprite"), 150)
-    p2_img = baixar_sprite(pokemon2.get("sprite"), 150)
+    except Exception:
+        pass
 
-    if p1_img:
-        img.paste(p1_img, (105, 170), p1_img)
+    def barra(x, y, hp, hp_max):
+        largura_barra = 150
+        proporcao = max(0, hp) / hp_max if hp_max else 0
+        verde = int(largura_barra * proporcao)
 
-    if p2_img:
-        img.paste(p2_img, (450, 35), p2_img)
+        draw.rectangle([x, y, x + largura_barra, y + 10], fill=(80, 80, 80))
+        draw.rectangle([x, y, x + verde, y + 10], fill=(0, 255, 0))
 
-    def barra_hp_visual(x, y, hp, hp_max, nome):
-        hp_max = max(1, hp_max)
-        hp = max(0, hp)
-        proporcao = max(0, min(1, hp / hp_max))
+    barra(60, 130, hp1, hp1_max)
+    barra(350, 30, hp2, hp2_max)
 
-        draw.rounded_rectangle((x, y, x + 230, y + 62), radius=10, fill=(245, 245, 220), outline=(40, 40, 40), width=3)
-        draw.text((x + 12, y + 8), nome[:18].title(), fill=(20, 20, 20))
-        draw.text((x + 12, y + 33), f"HP {hp}/{hp_max}", fill=(20, 20, 20))
-
-        barra_x = x + 85
-        barra_y = y + 38
-        barra_largura = 125
-        cor = (40, 210, 80)
-        if proporcao <= 0.5:
-            cor = (235, 190, 40)
-        if proporcao <= 0.2:
-            cor = (220, 60, 50)
-
-        draw.rounded_rectangle((barra_x, barra_y, barra_x + barra_largura, barra_y + 12), radius=5, fill=(70, 70, 70))
-        draw.rounded_rectangle((barra_x, barra_y, barra_x + int(barra_largura * proporcao), barra_y + 12), radius=5, fill=cor)
-
-    barra_hp_visual(35, 35, hp2, hp2_max, pokemon2.get("nome", "NPC"))
-    barra_hp_visual(425, 275, hp1, hp1_max, pokemon1.get("nome", "Você"))
-
-    caminho = "batalha.png"
+    caminho = f"batalha_{int(time.time())}.png"
     img.save(caminho)
-    return caminho
 
+    return caminho
 @tasks.loop(minutes=60)
 async def spawn_ginasio_automatico():
     await bot.wait_until_ready()
