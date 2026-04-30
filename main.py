@@ -30,6 +30,8 @@ from database import (
     listar_insignias as listar_insignias_banco,
     configurar_canal_spawn,
     buscar_canal_spawn,
+    configurar_canal_ginasio,
+    buscar_canal_ginasio,
     criar_anuncio_marketplace,
     listar_marketplace_ativos,
     comprar_marketplace_item
@@ -510,68 +512,314 @@ def listar_insignias(discord_id: int, guild_id):
     return [item[0] for item in dados]
 
 
-async def buscar_ataques_reais(nome_pokemon: str, limite: int = 4):
-    nome_pokemon = nome_pokemon.lower()
+async def buscar_ataques_reais(nome_pokemon: str, nivel: int = 1, limite: int = 4):
+    """
+    Moveset oficial automático:
+    - detecta a geração do Pokémon pela PokéAPI;
+    - prioriza jogos/version_groups compatíveis com essa geração;
+    - aceita apenas golpes aprendidos por level-up até o nível atual;
+    - usa apenas golpes com dano;
+    - se faltar golpe, completa com fallback seguro pelo tipo do Pokémon.
+    """
+    nome_pokemon = normalizar_nome(nome_pokemon).lower()
+    nivel = max(1, int(nivel or 1))
+    cache_key = f"{nome_pokemon}:{nivel}:auto_gen_v3"
 
-    if nome_pokemon in cache_ataques:
-        return cache_ataques[nome_pokemon]
+    if cache_key in cache_ataques:
+        return cache_ataques[cache_key]
 
-    url = f"https://pokeapi.co/api/v2/pokemon/{nome_pokemon}"
-    ataques = []
+    def limitar_poder(poder: int, nivel_atual: int):
+        poder = int(poder)
+        if nivel_atual < 10:
+            return min(poder, 45)
+        if nivel_atual < 25:
+            return min(poder, 70)
+        if nivel_atual < 50:
+            return min(poder, 95)
+        return min(poder, 120)
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    return ATAQUES[:limite]
+    def ataques_fallback_por_tipo(tipos):
+        tipo = tipos[0] if tipos else "normal"
 
-                dados = await resp.json()
+        mapa = {
+            "normal": [
+                {"nome": "Investida", "tipo": "normal", "poder": 35, "status": None},
+                {"nome": "Ataque Rápido", "tipo": "normal", "poder": 40, "status": None},
+                {"nome": "Arranhão", "tipo": "normal", "poder": 40, "status": None},
+                {"nome": "Cabeçada", "tipo": "normal", "poder": 60, "status": None},
+            ],
+            "water": [
+                {"nome": "Jato D'água", "tipo": "water", "poder": 40, "status": None},
+                {"nome": "Bolhas", "tipo": "water", "poder": 40, "status": None},
+                {"nome": "Pistola D'água", "tipo": "water", "poder": 50, "status": None},
+                {"nome": "Aqua Cauda", "tipo": "water", "poder": 90, "status": None},
+            ],
+            "fire": [
+                {"nome": "Brasa", "tipo": "fire", "poder": 40, "status": "queimar"},
+                {"nome": "Roda De Fogo", "tipo": "fire", "poder": 60, "status": "queimar"},
+                {"nome": "Lança-Chamas", "tipo": "fire", "poder": 90, "status": "queimar"},
+            ],
+            "grass": [
+                {"nome": "Chicote De Vinha", "tipo": "grass", "poder": 45, "status": None},
+                {"nome": "Folha Navalha", "tipo": "grass", "poder": 55, "status": None},
+                {"nome": "Mega Dreno", "tipo": "grass", "poder": 40, "status": None},
+            ],
+            "electric": [
+                {"nome": "Choque Do Trovão", "tipo": "electric", "poder": 40, "status": "paralisar"},
+                {"nome": "Faísca", "tipo": "electric", "poder": 65, "status": "paralisar"},
+                {"nome": "Descarga", "tipo": "electric", "poder": 80, "status": "paralisar"},
+            ],
+            "rock": [
+                {"nome": "Pedrada", "tipo": "rock", "poder": 50, "status": None},
+                {"nome": "Tumba De Rochas", "tipo": "rock", "poder": 60, "status": None},
+            ],
+            "ground": [
+                {"nome": "Tapa De Lama", "tipo": "ground", "poder": 30, "status": None},
+                {"nome": "Magnitude", "tipo": "ground", "poder": 70, "status": None},
+            ],
+            "ice": [
+                {"nome": "Vento Gelado", "tipo": "ice", "poder": 55, "status": None},
+                {"nome": "Raio De Gelo", "tipo": "ice", "poder": 90, "status": None},
+            ],
+            "fighting": [
+                {"nome": "Chute Baixo", "tipo": "fighting", "poder": 50, "status": None},
+                {"nome": "Soco Karate", "tipo": "fighting", "poder": 50, "status": None},
+            ],
+            "poison": [
+                {"nome": "Ferrão Venenoso", "tipo": "poison", "poder": 30, "status": None},
+                {"nome": "Ácido", "tipo": "poison", "poder": 40, "status": None},
+            ],
+            "flying": [
+                {"nome": "Rajada", "tipo": "flying", "poder": 40, "status": None},
+                {"nome": "Ataque De Asa", "tipo": "flying", "poder": 60, "status": None},
+            ],
+            "psychic": [
+                {"nome": "Confusão", "tipo": "psychic", "poder": 50, "status": None},
+                {"nome": "Psíquico", "tipo": "psychic", "poder": 90, "status": None},
+            ],
+            "bug": [
+                {"nome": "Picada", "tipo": "bug", "poder": 60, "status": None},
+                {"nome": "Cortador De Fúria", "tipo": "bug", "poder": 40, "status": None},
+            ],
+            "ghost": [
+                {"nome": "Lambida", "tipo": "ghost", "poder": 30, "status": "paralisar"},
+                {"nome": "Bola Sombria", "tipo": "ghost", "poder": 80, "status": None},
+            ],
+            "dragon": [
+                {"nome": "Fúria Do Dragão", "tipo": "dragon", "poder": 40, "status": None},
+                {"nome": "Pulso Do Dragão", "tipo": "dragon", "poder": 85, "status": None},
+            ],
+            "dark": [
+                {"nome": "Mordida", "tipo": "dark", "poder": 60, "status": None},
+                {"nome": "Ataque Noturno", "tipo": "dark", "poder": 70, "status": None},
+            ],
+            "steel": [
+                {"nome": "Garra De Metal", "tipo": "steel", "poder": 50, "status": None},
+                {"nome": "Cabeça De Ferro", "tipo": "steel", "poder": 80, "status": None},
+            ],
+            "fairy": [
+                {"nome": "Vento Fada", "tipo": "fairy", "poder": 40, "status": None},
+                {"nome": "Beijo Drenante", "tipo": "fairy", "poder": 50, "status": None},
+            ],
+        }
 
-            movimentos = dados.get("moves", [])
-            random.shuffle(movimentos)
+        base = mapa.get(tipo, mapa["normal"]) + mapa["normal"]
+        vistos = set()
+        resultado = []
 
-            for move_item in movimentos:
-                move_url = move_item["move"]["url"]
+        for ataque in base:
+            if ataque["nome"] in vistos:
+                continue
 
-                async with session.get(move_url) as move_resp:
+            vistos.add(ataque["nome"])
+            ataque = dict(ataque)
+            ataque["poder"] = limitar_poder(ataque["poder"], nivel)
+            resultado.append(ataque)
+
+            if len(resultado) >= limite:
+                break
+
+        return resultado
+
+    def versoes_prioridade_por_geracao(geracao: str):
+        por_geracao = {
+            "generation-i": ["yellow", "red-blue", "firered-leafgreen", "lets-go-pikachu-lets-go-eevee"],
+            "generation-ii": ["crystal", "gold-silver", "heartgold-soulsilver"],
+            "generation-iii": ["emerald", "ruby-sapphire", "firered-leafgreen", "omega-ruby-alpha-sapphire"],
+            "generation-iv": ["platinum", "diamond-pearl", "heartgold-soulsilver", "brilliant-diamond-and-shining-pearl"],
+            "generation-v": ["black-2-white-2", "black-white"],
+            "generation-vi": ["x-y", "omega-ruby-alpha-sapphire"],
+            "generation-vii": ["ultra-sun-ultra-moon", "sun-moon", "lets-go-pikachu-lets-go-eevee"],
+            "generation-viii": ["sword-shield", "legends-arceus", "brilliant-diamond-and-shining-pearl"],
+            "generation-ix": ["scarlet-violet"],
+        }
+
+        extras = [
+            "scarlet-violet",
+            "sword-shield",
+            "ultra-sun-ultra-moon",
+            "sun-moon",
+            "omega-ruby-alpha-sapphire",
+            "x-y",
+            "black-2-white-2",
+            "black-white",
+            "heartgold-soulsilver",
+            "platinum",
+            "diamond-pearl",
+            "emerald",
+            "firered-leafgreen",
+            "ruby-sapphire",
+            "crystal",
+            "gold-silver",
+            "yellow",
+            "red-blue",
+        ]
+
+        prioridade = por_geracao.get(geracao, []) + extras
+        sem_repetir = []
+
+        for versao in prioridade:
+            if versao not in sem_repetir:
+                sem_repetir.append(versao)
+
+        return sem_repetir
+
+    async def montar_ataques_da_versao(session, movimentos_validos):
+        ataques = []
+        movimentos_validos.sort(key=lambda item: item["nivel_aprendido"], reverse=True)
+
+        for move_item in movimentos_validos:
+            try:
+                async with session.get(move_item["url"]) as move_resp:
                     if move_resp.status != 200:
                         continue
 
                     move_data = await move_resp.json()
 
-                poder = move_data.get("power")
-                tipo = move_data.get("type", {}).get("name", "normal")
-                nome = move_data.get("name", "ataque").replace("-", " ").title()
+            except Exception:
+                continue
 
-                if not poder:
+            poder = move_data.get("power")
+            damage_class = move_data.get("damage_class", {}).get("name")
+
+            if not poder or damage_class == "status":
+                continue
+
+            tipo = move_data.get("type", {}).get("name", "normal")
+            nome = move_data.get("name", "ataque").replace("-", " ").title()
+
+            status = None
+            entradas = move_data.get("effect_entries") or []
+            efeito = entradas[0].get("effect", "").lower() if entradas else ""
+
+            if "burn" in efeito:
+                status = "queimar"
+            elif "paralyze" in efeito or "paralysis" in efeito:
+                status = "paralisar"
+
+            ataque_formatado = {
+                "nome": nome[:80],
+                "tipo": tipo,
+                "poder": limitar_poder(int(poder), nivel),
+                "status": status
+            }
+
+            if ataque_formatado["nome"] not in [a["nome"] for a in ataques]:
+                ataques.append(ataque_formatado)
+
+            if len(ataques) >= limite:
+                break
+
+        return ataques
+
+    url = f"https://pokeapi.co/api/v2/pokemon/{nome_pokemon}"
+    tipos_pokemon = []
+    ataques_final = []
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    ataques_final = ataques_fallback_por_tipo([])
+                    cache_ataques[cache_key] = ataques_final
+                    return ataques_final
+
+                dados = await resp.json()
+
+            tipos_pokemon = [t["type"]["name"] for t in dados.get("types", [])]
+            especie_url = dados.get("species", {}).get("url")
+            geracao = None
+
+            if especie_url:
+                try:
+                    async with session.get(especie_url) as species_resp:
+                        if species_resp.status == 200:
+                            species_data = await species_resp.json()
+                            geracao = species_data.get("generation", {}).get("name")
+                except Exception:
+                    geracao = None
+
+            versoes_prioridade = versoes_prioridade_por_geracao(geracao)
+            movimentos_por_versao = {v: [] for v in versoes_prioridade}
+
+            for move_item in dados.get("moves", []):
+                move = move_item.get("move", {})
+                move_url = move.get("url")
+
+                if not move_url:
                     continue
 
-                status = None
-                efeito = (move_data.get("effect_entries") or [{}])[0].get("effect", "").lower()
+                for detalhe in move_item.get("version_group_details", []):
+                    metodo = detalhe.get("move_learn_method", {}).get("name")
+                    version_group = detalhe.get("version_group", {}).get("name")
+                    level_learned = detalhe.get("level_learned_at", 0)
 
-                if "burn" in efeito:
-                    status = "queimar"
-                elif "paralyze" in efeito or "paralysis" in efeito:
-                    status = "paralisar"
+                    if metodo != "level-up":
+                        continue
 
-                ataques.append({
-                    "nome": nome[:80],
-                    "tipo": tipo,
-                    "poder": min(int(poder), 120),
-                    "status": status
-                })
+                    # level 0 geralmente significa golpe inicial naquela versão.
+                    level_minimo = 1 if int(level_learned or 0) == 0 else int(level_learned)
 
-                if len(ataques) >= limite:
+                    if level_minimo <= nivel and version_group in movimentos_por_versao:
+                        movimentos_por_versao[version_group].append({
+                            "nome": move.get("name"),
+                            "url": move_url,
+                            "nivel_aprendido": level_minimo,
+                            "version_group": version_group
+                        })
+
+            # Tenta primeiro os jogos compatíveis com a geração do Pokémon.
+            for versao in versoes_prioridade:
+                movimentos = movimentos_por_versao.get(versao, [])
+
+                if not movimentos:
+                    continue
+
+                ataques = await montar_ataques_da_versao(session, movimentos)
+
+                if ataques:
+                    ataques_final = ataques
                     break
 
+            # Se faltarem golpes com dano, completa com fallback seguro pelo tipo.
+            if len(ataques_final) < limite:
+                nomes_existentes = {a["nome"] for a in ataques_final}
+
+                for ataque in ataques_fallback_por_tipo(tipos_pokemon):
+                    if ataque["nome"] not in nomes_existentes:
+                        ataques_final.append(ataque)
+
+                    if len(ataques_final) >= limite:
+                        break
+
     except Exception:
-        return ATAQUES[:limite]
+        ataques_final = ataques_fallback_por_tipo(tipos_pokemon)
 
-    ataques_final = ataques[:limite] if ataques else ATAQUES[:limite]
-    cache_ataques[nome_pokemon] = ataques_final
+    if not ataques_final:
+        ataques_final = ataques_fallback_por_tipo(tipos_pokemon)
 
-    return ataques_final
-
+    cache_ataques[cache_key] = ataques_final[:limite]
+    return ataques_final[:limite]
 
 def ataques_para_select_lista(ataques):
     return [discord.SelectOption(label=a["nome"][:100], description=f"Tipo {TIPOS_PTBR.get(a['tipo'], a['tipo'].title())} | Poder {a['poder']}", value=a["nome"][:100]) for a in ataques[:4]]
@@ -1565,8 +1813,8 @@ class EscolherPokemonPVPView(discord.ui.View):
             inline=True
         )
 
-        ataques_p1 = await buscar_ataques_reais(p1[1])
-        ataques_p2 = await buscar_ataques_reais(p2[1])
+        ataques_p1 = await buscar_ataques_reais(p1[1], p1[2])
+        ataques_p2 = await buscar_ataques_reais(p2[1], p2[2])
 
         view = BatalhaPVPView(self.j1, self.j2, p1, p2, p1_info, p2_info, ataques_p1, ataques_p2)
         caminho = gerar_imagem_batalha(
@@ -1667,8 +1915,8 @@ class EscolherPokemonNPCView(discord.ui.View):
         elif pokemon_npc.get("imagem"):
             embed.set_thumbnail(url=pokemon_npc["imagem"])
 
-        ataques_jogador = await buscar_ataques_reais(meu_pokemon[1])
-        ataques_npc = await buscar_ataques_reais(pokemon_npc["nome"])
+        ataques_jogador = await buscar_ataques_reais(meu_pokemon[1], meu_pokemon[2])
+        ataques_npc = await buscar_ataques_reais(pokemon_npc["nome"], nivel_npc)
 
         view = BatalhaNPCView(
             jogador=interaction.user,
@@ -1864,8 +2112,8 @@ class EscolherPokemonGinasioView(discord.ui.View):
         if pokemon_lider.get("sprite"):
             embed.set_thumbnail(url=pokemon_lider["sprite"])
 
-        ataques_jogador = await buscar_ataques_reais(meu_pokemon[1])
-        ataques_lider = await buscar_ataques_reais(pokemon_lider["nome"])
+        ataques_jogador = await buscar_ataques_reais(meu_pokemon[1], meu_pokemon[2])
+        ataques_lider = await buscar_ataques_reais(pokemon_lider["nome"], lider["nivel"])
 
         view = BatalhaGinasioView(
             interaction.user,
@@ -2159,17 +2407,26 @@ class MarketplaceView(discord.ui.View):
             print(f"Erro ao comprar marketplace: {erro}")
             await interaction.response.send_message("❌ Erro ao comprar esse Pokémon.", ephemeral=True)
 
-
-@bot.tree.command(name="config", description="Configura o canal de spawn deste servidor.")
-@app_commands.describe(canal="Canal onde os Pokémon vão aparecer")
 @app_commands.checks.has_permissions(administrator=True)
-async def config(interaction: discord.Interaction, canal: discord.TextChannel):
-    configurar_canal_spawn(interaction.guild.id, canal.id)
-    await interaction.response.send_message(
-        f"✅ Canal de spawn configurado para {canal.mention} neste servidor.",
-        ephemeral=True
-    )
 
+@bot.tree.command(name="config", description="Configurar canais do servidor")
+@app_commands.checks.has_permissions(administrator=True)
+@app_commands.describe(tipo="Tipo", canal="Canal")
+@app_commands.choices(tipo=[
+    app_commands.Choice(name="Spawn Pokémon", value="spawn"),
+    app_commands.Choice(name="Ginásio", value="ginasio")
+])
+async def config(interaction: discord.Interaction, tipo: str, canal: discord.TextChannel):
+
+    if tipo == "spawn":
+        configurar_canal_spawn(interaction.guild.id, canal.id)
+        msg = f"✅ Spawn configurado em {canal.mention}"
+
+    elif tipo == "ginasio":
+        configurar_canal_ginasio(interaction.guild.id, canal.id)
+        msg = f"🏆 Ginásio configurado em {canal.mention}"
+
+    await interaction.response.send_message(msg, ephemeral=True)
 
 @bot.tree.command(name="vender_pokemon", description="Coloca um Pokémon seu à venda no marketplace.")
 @app_commands.describe(indice="Número do Pokémon na sua lista do /pokemon", preco="Preço em pc/moedas")
