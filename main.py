@@ -27,7 +27,12 @@ from database import (
     definir_pokemon_ativo,
     pokemon_ativo as pokemon_ativo_banco,
     adicionar_insignia,
-    listar_insignias as listar_insignias_banco
+    listar_insignias as listar_insignias_banco,
+    configurar_canal_spawn,
+    buscar_canal_spawn,
+    criar_anuncio_marketplace,
+    listar_marketplace_ativos,
+    comprar_marketplace_item
 )
 
 from pokemon_api import (
@@ -43,27 +48,20 @@ from pokemon_api import (
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-CANAL_SPAWN_ID = os.getenv("CANAL_SPAWN_ID")
 TEMPO_SPAWN_MINUTOS = int(os.getenv("TEMPO_SPAWN_MINUTOS", "50"))
 
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-pokemon_atual = {
-    "canal_id": None,
-    "pokemon": None,
-    "nivel": None
-}
+# Spawn separado por servidor: {guild_id: {canal_id, pokemon, nivel}}
+pokemon_atual = {}
 
 pokemon_ativo_usuarios = {}
 insignias_usuarios = {}
 cache_ataques = {}
 
-lider_ginasio_atual = {
-    "canal_id": None,
-    "lider": None,
-    "criado_em": None
-}
+# Líder de ginásio separado por servidor: {guild_id: {canal_id, lider, criado_em}}
+lider_ginasio_atual = {}
 
 LIDERES_GINASIO = [
     {"nome": "Brock", "tipo_pt": "Pedra", "pokemon": "onix", "nivel": 10, "insignia": "Insígnia da Rocha", "imagem": "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/95.png"},
@@ -410,10 +408,13 @@ async def enviar_spawn(canal: discord.TextChannel):
         return
 
     nivel = gerar_nivel_spawn()
+    guild_id = canal.guild.id if canal.guild else canal.id
 
-    pokemon_atual["canal_id"] = canal.id
-    pokemon_atual["pokemon"] = pokemon
-    pokemon_atual["nivel"] = nivel
+    pokemon_atual[guild_id] = {
+        "canal_id": canal.id,
+        "pokemon": pokemon,
+        "nivel": nivel
+    }
 
     embed = discord.Embed(
         title="🌿 Um Pokémon selvagem apareceu!",
@@ -431,14 +432,12 @@ async def enviar_spawn(canal: discord.TextChannel):
     await canal.send(embed=embed)
 
 
-def encontrar_canal_spawn():
-    if CANAL_SPAWN_ID:
-        canal = bot.get_channel(int(CANAL_SPAWN_ID))
-        if canal:
-            return canal
+def encontrar_canal_spawn(guild: discord.Guild):
+    canal_id = buscar_canal_spawn(guild.id)
 
-    for guild in bot.guilds:
-        for canal in guild.text_channels:
+    if canal_id:
+        canal = guild.get_channel(int(canal_id))
+        if canal:
             permissoes = canal.permissions_for(guild.me)
             if permissoes.send_messages and permissoes.embed_links:
                 return canal
@@ -750,7 +749,23 @@ class BatalhaNPCView(discord.ui.View):
             for item in self.children:
                 item.disabled = True
 
-        await interaction.response.edit_message(embed=embed, view=self)
+        caminho = gerar_imagem_batalha(
+            {"sprite": self.meu_info.get("sprite"), "nome": meu_nome, "nivel": meu_nivel},
+            {"sprite": self.pokemon_npc.get("sprite"), "nome": self.pokemon_npc.get("nome"), "nivel": self.nivel_npc},
+            self.hp_meu,
+            self.hp_npc,
+            self.hp_meu_max,
+            self.hp_npc_max
+        )
+
+        file = discord.File(caminho, filename="batalha.png")
+        embed.set_image(url="attachment://batalha.png")
+
+        await interaction.response.edit_message(
+            embed=embed,
+            attachments=[file],
+            view=self
+        )
 
 
 
@@ -820,7 +835,8 @@ class BatalhaGinasioView(discord.ui.View):
             adicionar_nivel_pokemon(meu_id, 2)
             salvar_insignia(self.jogador.id, self.lider["insignia"])
             embed.add_field(name="🎖️ Vitória de Ginásio!", value=f"Você ganhou **{self.lider['insignia']}** e seu **{meu_nome.title()}** ganhou **+2 níveis**!", inline=False)
-            lider_ginasio_atual["lider"] = None
+            guild_id = interaction.guild.id if interaction.guild else interaction.channel.id
+            lider_ginasio_atual.pop(guild_id, None)
             evolucao = await tentar_evoluir_pokemon(meu_id, meu_nome, meu_nivel + 2)
             if evolucao:
                 embed.add_field(name="✨ Evolução automática!", value=f"Seu **{evolucao['nome_antigo'].title()}** evoluiu para **{evolucao['nome_novo'].title()}**!", inline=False)
@@ -1090,13 +1106,13 @@ async def on_app_command_error(interaction: discord.Interaction, erro: app_comma
 async def spawn_automatico():
     await bot.wait_until_ready()
 
-    canal = encontrar_canal_spawn()
+    for guild in bot.guilds:
+        canal = encontrar_canal_spawn(guild)
+        if not canal:
+            print(f"Nenhum canal de spawn configurado em: {guild.name}")
+            continue
 
-    if not canal:
-        print("Nenhum canal de spawn encontrado.")
-        return
-
-    await enviar_spawn(canal)
+        await enviar_spawn(canal)
 
 
 @bot.tree.command(name="tutorial", description="Mostra o tutorial de como jogar.")
@@ -1218,15 +1234,18 @@ async def escolher(interaction: discord.Interaction, pokemon: str):
 async def capturar(interaction: discord.Interaction, nome: str):
     await interaction.response.defer()
 
-    if pokemon_atual["pokemon"] is None:
+    guild_id = interaction.guild.id if interaction.guild else interaction.channel.id
+    spawn = pokemon_atual.get(guild_id)
+
+    if not spawn or spawn.get("pokemon") is None:
         await interaction.followup.send("❌ Não tem nenhum Pokémon selvagem no momento.", ephemeral=True)
         return
 
-    if pokemon_atual["canal_id"] != interaction.channel.id:
+    if spawn.get("canal_id") != interaction.channel.id:
         await interaction.followup.send("❌ O Pokémon selvagem não apareceu neste canal.", ephemeral=True)
         return
 
-    pokemon = pokemon_atual["pokemon"]
+    pokemon = spawn["pokemon"]
     nome_digitado = normalizar_nome(nome)
     nome_correto = normalizar_nome(pokemon["nome"])
 
@@ -1234,7 +1253,7 @@ async def capturar(interaction: discord.Interaction, nome: str):
         await interaction.followup.send("❌ Nome incorreto! Tente novamente.", ephemeral=True)
         return
 
-    nivel = pokemon_atual["nivel"]
+    nivel = spawn["nivel"]
 
     pokemon_id = adicionar_pokemon(
         discord_id=interaction.user.id,
@@ -1271,9 +1290,7 @@ async def capturar(interaction: discord.Interaction, nome: str):
     elif pokemon["imagem"]:
         embed.set_thumbnail(url=pokemon["imagem"])
 
-    pokemon_atual["canal_id"] = None
-    pokemon_atual["pokemon"] = None
-    pokemon_atual["nivel"] = None
+    pokemon_atual.pop(guild_id, None)
 
     await interaction.followup.send(embed=embed)
 
@@ -1291,30 +1308,38 @@ async def pokemon(interaction: discord.Interaction):
         )
         return
 
-    linhas = []
-
+    itens = []
     for i, item in enumerate(dados[:15], start=1):
         nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = item[:8]
-
-        pokemon_info = await buscar_pokemon(nome)
-        emoji = "⭐" if inicial else "📦"
-
         poder = calcular_poder((0, nome, nivel, hp, ataque, defesa, velocidade))
+        pct = min(99.99, round((poder / 350) * 100, 2))
+        info = await buscar_pokemon(nome)
+        itens.append({
+            "id": i,
+            "nome": nome,
+            "nivel": nivel,
+            "poder": poder,
+            "pct": pct,
+            "preco": 0,
+            "sprite": info.get("sprite") if info else None,
+            "inicial": inicial
+        })
 
-        linhas.append(
-            f"`{i:>4}` {emoji} **L{nivel} {nome.title()}**  •  "
-            f"HP `{hp}`  ATQ `{ataque}`  DEF `{defesa}`  •  Poder `{poder}`"
-        )
-
-    embed = discord.Embed(
-        title="📦 PokéNezu Pokémon",
-        description="\n".join(linhas),
-        color=discord.Color.red()
+    caminho = gerar_imagem_lista_pokemon(
+        titulo=f"PokéNezu Pokémon — {interaction.user.display_name}",
+        itens=itens,
+        mostrar_preco=False
     )
 
-    embed.set_footer(text="Use /selecionar indice:número para escolher quem vai batalhar.")
+    file = discord.File(caminho, filename="pokemon_lista.png")
+    embed = discord.Embed(
+        title="📦 Seus Pokémon",
+        description="Use `/selecionar indice:número` para escolher seu Pokémon ativo.",
+        color=discord.Color.red()
+    )
+    embed.set_image(url="attachment://pokemon_lista.png")
 
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, file=file, ephemeral=True)
 
 @bot.tree.command(name="info", description="Mostra informações de um Pokémon.")
 @app_commands.describe(nome="Nome do Pokémon")
@@ -1709,6 +1734,7 @@ async def insignias(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+
 class EscolherPokemonGinasioView(discord.ui.View):
     def __init__(self, jogador, lider, pokemons):
         super().__init__(timeout=120)
@@ -1750,20 +1776,19 @@ class EscolherPokemonGinasioView(discord.ui.View):
             await interaction.followup.send("❌ Pokémon não encontrado.", ephemeral=True)
             return
 
-        lider = self.lider
         meu_info = await buscar_pokemon(meu_pokemon[1])
-        pokemon_lider = await buscar_pokemon(lider["pokemon"])
+        pokemon_lider = await buscar_pokemon(self.lider["pokemon"])
 
         if not meu_info or not pokemon_lider:
             await interaction.followup.send("❌ Não consegui carregar os dados da batalha.", ephemeral=True)
             return
 
         hp_meu = hp_batalha(meu_pokemon)
-        hp_lider = hp_batalha(pokemon_dict_para_tuple(pokemon_lider, lider["nivel"]))
+        hp_lider = hp_batalha(pokemon_dict_para_tuple(pokemon_lider, self.lider["nivel"]))
 
         embed = discord.Embed(
-            title=f"🏆 Desafio de Ginásio: {lider['nome']}",
-            description=f"Valendo a **{lider['insignia']}**!\nEscolha um ataque para começar a batalha.",
+            title=f"🏆 Desafio de Ginásio: {self.lider['nome']}",
+            description=f"Valendo a **{self.lider['insignia']}**!\nEscolha um ataque para começar a batalha.",
             color=discord.Color.gold()
         )
 
@@ -1779,24 +1804,34 @@ class EscolherPokemonGinasioView(discord.ui.View):
         )
 
         embed.add_field(
-            name=f"{lider['nome']} — {lider['tipo_pt']}",
+            name=f"{self.lider['nome']} — {self.lider['tipo_pt']}",
             value=(
-                f"**{pokemon_lider['nome'].title()}** Nv. {lider['nivel']}\n"
+                f"**{pokemon_lider['nome'].title()}** Nv. {self.lider['nivel']}\n"
                 f"❤️ `{hp_lider}/{hp_lider}`\n"
                 f"`{barra_hp(hp_lider, hp_lider)}`\n"
-                f"Recompensa: 🎖️ {lider['insignia']}"
+                f"Recompensa: 🎖️ {self.lider['insignia']}"
             ),
             inline=True
         )
 
-        embed.set_image(url=lider["imagem"])
+        if self.lider.get("imagem"):
+            embed.set_image(url=self.lider["imagem"])
         if pokemon_lider.get("sprite"):
             embed.set_thumbnail(url=pokemon_lider["sprite"])
 
         ataques_jogador = await buscar_ataques_reais(meu_pokemon[1])
         ataques_lider = await buscar_ataques_reais(pokemon_lider["nome"])
 
-        view = BatalhaGinasioView(interaction.user, meu_pokemon, meu_info, lider, pokemon_lider, ataques_jogador, ataques_lider)
+        view = BatalhaGinasioView(
+            interaction.user,
+            meu_pokemon,
+            meu_info,
+            self.lider,
+            pokemon_lider,
+            ataques_jogador,
+            ataques_lider
+        )
+
         await interaction.edit_original_response(embed=embed, view=view)
 
 
@@ -1804,31 +1839,34 @@ class EscolherPokemonGinasioView(discord.ui.View):
 async def batalhar_ginasio(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    lider = lider_ginasio_atual.get("lider")
+    guild_id = interaction.guild.id if interaction.guild else interaction.channel.id
+    atual = lider_ginasio_atual.get(guild_id, {})
+    lider = atual.get("lider")
+
     if not lider:
         await interaction.followup.send("❌ Nenhum líder de ginásio apareceu agora.", ephemeral=True)
         return
 
-    if lider_ginasio_atual.get("canal_id") != interaction.channel.id:
+    if atual.get("canal_id") != interaction.channel.id:
         await interaction.followup.send("❌ O líder de ginásio não apareceu neste canal.", ephemeral=True)
         return
 
-    if lider_ginasio_atual.get("criado_em") and time.time() - lider_ginasio_atual["criado_em"] > 7200:
-        lider_ginasio_atual["lider"] = None
+    if atual.get("criado_em") and time.time() - atual["criado_em"] > 7200:
+        lider_ginasio_atual.pop(guild_id, None)
         await interaction.followup.send("❌ Esse líder de ginásio já foi embora.", ephemeral=True)
         return
 
     pokemons = listar_pokemons_com_id(interaction.user.id)
+
     if not pokemons:
         await interaction.followup.send("❌ Você ainda não tem Pokémon. Use `/iniciar` primeiro.", ephemeral=True)
         return
 
     embed = discord.Embed(
-        title=f"🏆 Desafio de Ginásio — {lider['nome']}",
+        title=f"🏆 Desafio de Ginásio: {lider['nome']}",
         description=(
-            f"Especialista em tipo **{lider['tipo_pt']}**.\n"
-            f"Valendo: **{lider['insignia']}** 🎖️\n\n"
-            "Selecione abaixo qual Pokémon você quer usar."
+            f"Valendo a **{lider['insignia']}**!\n"
+            "Escolha abaixo qual Pokémon você quer usar contra o líder."
         ),
         color=discord.Color.gold()
     )
@@ -1848,6 +1886,7 @@ async def batalhar_ginasio(interaction: discord.Interaction):
     view = EscolherPokemonGinasioView(interaction.user, lider, pokemons[:25])
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
+
 @bot.tree.command(name="saldo", description="Mostra seu saldo de moedas.")
 async def saldo(interaction: discord.Interaction):
     moedas = saldo_usuario(interaction.user.id)
@@ -1862,65 +1901,223 @@ async def spawn_teste(interaction: discord.Interaction):
     await interaction.response.send_message("🌿 Gerando um Pokémon selvagem...", ephemeral=True)
     await enviar_spawn(interaction.channel)
 
-def gerar_imagem_batalha(pokemon1, pokemon2, hp1, hp2, hp1_max, hp2_max):
-    largura, altura = 600, 300
+def _carregar_sprite(url, tamanho=(120, 120)):
+    if not url:
+        return None
+    try:
+        resp = requests.get(url, timeout=8)
+        if resp.status_code != 200:
+            return None
+        img = Image.open(BytesIO(resp.content)).convert("RGBA")
+        return img.resize(tamanho, Image.Resampling.NEAREST)
+    except Exception:
+        return None
 
-    img = Image.new("RGB", (largura, altura), (120, 200, 120))
+
+def gerar_imagem_batalha(pokemon1, pokemon2, hp1, hp2, hp1_max, hp2_max):
+    largura, altura = 760, 420
+    img = Image.new("RGB", (largura, altura), (14, 45, 10))
     draw = ImageDraw.Draw(img)
 
-    try:
-        sprite1 = requests.get(pokemon1["sprite"]).content
-        sprite2 = requests.get(pokemon2["sprite"]).content
+    # fundo em faixas verdes estilo batalha clássica
+    for y in range(0, 300, 18):
+        cor = (18 + (y % 36), 80 + (y % 54), 12)
+        draw.rectangle([0, y, largura, y + 18], fill=cor)
 
-        p1_img = Image.open(BytesIO(sprite1)).resize((120, 120))
-        p2_img = Image.open(BytesIO(sprite2)).resize((120, 120))
+    # plataformas
+    draw.ellipse([40, 250, 360, 380], fill=(55, 170, 65), outline=(190, 150, 45), width=5)
+    draw.ellipse([430, 115, 720, 230], fill=(55, 170, 65), outline=(190, 150, 45), width=5)
 
-        img.paste(p1_img, (80, 150), p1_img)
-        img.paste(p2_img, (400, 50), p2_img)
+    p1_img = _carregar_sprite(pokemon1.get("sprite"), (150, 150))
+    p2_img = _carregar_sprite(pokemon2.get("sprite"), (130, 130))
+    if p1_img:
+        img.paste(p1_img, (115, 190), p1_img)
+    if p2_img:
+        img.paste(p2_img, (520, 55), p2_img)
 
-    except:
-        pass
+    def caixa_status(x, y, nome, nivel, hp, hp_max):
+        draw.rounded_rectangle([x, y, x + 260, y + 78], radius=10, fill=(20, 25, 25), outline=(235, 235, 235), width=3)
+        draw.text((x + 14, y + 10), f"{nome.title()[:14]}", fill=(255, 255, 255))
+        draw.text((x + 190, y + 10), f"Lv.{nivel}", fill=(255, 255, 255))
+        draw.text((x + 14, y + 40), "HP", fill=(255, 210, 60))
+        draw.rounded_rectangle([x + 55, y + 43, x + 235, y + 57], radius=5, fill=(45, 45, 45), outline=(245, 245, 245), width=2)
+        pct = 0 if hp_max <= 0 else max(0, min(1, hp / hp_max))
+        cor = (0, 230, 40) if pct > 0.5 else ((240, 210, 30) if pct > 0.2 else (230, 50, 50))
+        draw.rounded_rectangle([x + 58, y + 46, x + 58 + int(174 * pct), y + 54], radius=4, fill=cor)
+        draw.text((x + 150, y + 58), f"{max(0, hp)}/{hp_max}", fill=(255, 255, 255))
 
-    def barra(x, y, hp, hp_max):
-        largura_barra = 150
-        proporcao = hp / hp_max
-        verde = int(largura_barra * proporcao)
-
-        draw.rectangle([x, y, x + largura_barra, y + 10], fill=(80, 80, 80))
-        draw.rectangle([x, y, x + verde, y + 10], fill=(0, 255, 0))
-
-    barra(60, 130, hp1, hp1_max)
-    barra(350, 30, hp2, hp2_max)
+    caixa_status(25, 35, pokemon2.get("nome", "NPC"), pokemon2.get("nivel", 1), hp2, hp2_max)
+    caixa_status(470, 270, pokemon1.get("nome", "Você"), pokemon1.get("nivel", 1), hp1, hp1_max)
 
     caminho = "batalha.png"
     img.save(caminho)
-
     return caminho
+
+
+def gerar_imagem_lista_pokemon(titulo, itens, mostrar_preco=True):
+    largura = 760
+    altura = 88 + (len(itens) * 42)
+    img = Image.new("RGB", (largura, altura), (43, 45, 52))
+    draw = ImageDraw.Draw(img)
+
+    draw.rectangle([0, 0, 8, altura], fill=(230, 60, 60))
+    draw.text((28, 24), titulo, fill=(255, 255, 255))
+
+    y = 70
+    for item in itens:
+        draw.rounded_rectangle([24, y, 110, y + 30], radius=4, fill=(32, 34, 40))
+        draw.text((42, y + 7), str(item["id"]), fill=(245, 245, 245))
+
+        sprite = _carregar_sprite(item.get("sprite"), (30, 30))
+        if sprite:
+            img.paste(sprite, (122, y), sprite)
+
+        draw.text((160, y + 5), f"L{item['nivel']} {item['nome'].title()[:16]}", fill=(255, 255, 255))
+        draw.text((390, y + 5), "•", fill=(255, 255, 255))
+        draw.text((430, y + 5), f"{item.get('pct', 0):.2f}%", fill=(225, 225, 225))
+        draw.text((545, y + 5), "•", fill=(255, 255, 255))
+        valor = f"{item.get('preco', item.get('poder', 0)):,} pc" if mostrar_preco else f"{item.get('poder', 0):,} poder"
+        draw.text((590, y + 5), valor, fill=(225, 225, 225))
+        y += 42
+
+    caminho = "lista_pokemon.png" if not mostrar_preco else "marketplace.png"
+    img.save(caminho)
+    return caminho
+
+
+class MarketplaceView(discord.ui.View):
+    def __init__(self, itens):
+        super().__init__(timeout=180)
+        for item in itens[:15]:
+            botao = discord.ui.Button(
+                label=f"Comprar #{item['id']} - {item['preco']} pc",
+                style=discord.ButtonStyle.green,
+                custom_id=f"comprar_market_{item['id']}"
+            )
+            botao.callback = self.comprar_callback
+            self.add_item(botao)
+
+    async def comprar_callback(self, interaction: discord.Interaction):
+        try:
+            item_id = int(interaction.data["custom_id"].replace("comprar_market_", ""))
+            resultado = comprar_marketplace_item(interaction.user.id, item_id)
+            if not resultado["ok"]:
+                await interaction.response.send_message(f"❌ {resultado['erro']}", ephemeral=True)
+                return
+            await interaction.response.send_message(
+                f"✅ Você comprou **{resultado['pokemon'].title()}** por **{resultado['preco']} pc**!",
+                ephemeral=True
+            )
+        except Exception as erro:
+            print(f"Erro ao comprar marketplace: {erro}")
+            await interaction.response.send_message("❌ Erro ao comprar esse Pokémon.", ephemeral=True)
+
+
+@bot.tree.command(name="config", description="Configura o canal de spawn deste servidor.")
+@app_commands.describe(canal="Canal onde os Pokémon vão aparecer")
+@app_commands.checks.has_permissions(administrator=True)
+async def config(interaction: discord.Interaction, canal: discord.TextChannel):
+    configurar_canal_spawn(interaction.guild.id, canal.id)
+    await interaction.response.send_message(
+        f"✅ Canal de spawn configurado para {canal.mention} neste servidor.",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="vender_pokemon", description="Coloca um Pokémon seu à venda no marketplace.")
+@app_commands.describe(indice="Número do Pokémon na sua lista do /pokemon", preco="Preço em pc/moedas")
+async def vender_pokemon(interaction: discord.Interaction, indice: int, preco: int):
+    await interaction.response.defer(ephemeral=True)
+
+    if preco <= 0:
+        await interaction.followup.send("❌ O preço precisa ser maior que zero.", ephemeral=True)
+        return
+
+    pokemons = listar_pokemons_com_id(interaction.user.id)
+    if not pokemons:
+        await interaction.followup.send("❌ Você ainda não tem Pokémon.", ephemeral=True)
+        return
+    if indice < 1 or indice > len(pokemons):
+        await interaction.followup.send("❌ Índice inválido. Use `/pokemon` para ver sua lista.", ephemeral=True)
+        return
+
+    escolhido = pokemons[indice - 1]
+    pokemon_id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = escolhido
+    anuncio_id = criar_anuncio_marketplace(interaction.user.id, pokemon_id, preco)
+
+    await interaction.followup.send(
+        f"✅ **{nome.title()}** foi anunciado no marketplace por **{preco} pc**. ID do anúncio: `{anuncio_id}`",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="marketplace", description="Mostra os Pokémon à venda.")
+async def marketplace(interaction: discord.Interaction):
+    await interaction.response.defer()
+
+    anuncios = listar_marketplace_ativos(15)
+    if not anuncios:
+        await interaction.followup.send("📭 Nenhum Pokémon à venda no momento.", ephemeral=True)
+        return
+
+    itens = []
+    for anuncio in anuncios:
+        anuncio_id, pokemon_id, seller_id, preco, nome, nivel, hp, ataque, defesa, velocidade = anuncio[:10]
+        poder = calcular_poder((pokemon_id, nome, nivel, hp, ataque, defesa, velocidade))
+        pct = min(99.99, round((poder / 350) * 100, 2))
+        info = await buscar_pokemon(nome)
+        itens.append({
+            "id": anuncio_id,
+            "nome": nome,
+            "nivel": nivel,
+            "poder": poder,
+            "pct": pct,
+            "preco": preco,
+            "sprite": info.get("sprite") if info else None
+        })
+
+    caminho = gerar_imagem_lista_pokemon("PokéNezu Marketplace", itens, mostrar_preco=True)
+    file = discord.File(caminho, filename="marketplace.png")
+    embed = discord.Embed(
+        title="🛒 PokéNezu Marketplace",
+        description="Clique no botão com o valor para comprar.",
+        color=discord.Color.red()
+    )
+    embed.set_image(url="attachment://marketplace.png")
+
+    await interaction.followup.send(embed=embed, file=file, view=MarketplaceView(itens))
+
 
 @tasks.loop(minutes=60)
 async def spawn_ginasio_automatico():
     await bot.wait_until_ready()
-    canal = encontrar_canal_spawn()
-    if not canal:
-        return
-    if random.randint(1, 100) > 35:
-        return
-    lider = random.choice(LIDERES_GINASIO)
-    lider_ginasio_atual["canal_id"] = canal.id
-    lider_ginasio_atual["lider"] = lider
-    lider_ginasio_atual["criado_em"] = time.time()
-    embed = discord.Embed(
-        title="🏆 Um Líder de Ginásio apareceu!",
-        description=(
-            f"**{lider['nome']}**, especialista em tipo **{lider['tipo_pt']}**, quer batalhar!\n\n"
-            f"Use `/batalhar_ginasio` para desafiar.\n"
-            f"Se vencer, você ganha: **{lider['insignia']}** 🎖️"
-        ),
-        color=discord.Color.gold()
-    )
-    embed.add_field(name="Pokémon principal", value=f"**{lider['pokemon'].title()}** Nv. {lider['nivel']}", inline=True)
-    embed.set_image(url=lider["imagem"])
-    await canal.send(embed=embed)
+
+    for guild in bot.guilds:
+        canal = encontrar_canal_spawn(guild)
+        if not canal:
+            continue
+        if random.randint(1, 100) > 35:
+            continue
+
+        lider = random.choice(LIDERES_GINASIO)
+        lider_ginasio_atual[guild.id] = {
+            "canal_id": canal.id,
+            "lider": lider,
+            "criado_em": time.time()
+        }
+
+        embed = discord.Embed(
+            title="🏆 Um Líder de Ginásio apareceu!",
+            description=(
+                f"**{lider['nome']}**, especialista em tipo **{lider['tipo_pt']}**, quer batalhar!\n\n"
+                f"Use `/batalhar_ginasio` para desafiar.\n"
+                f"Se vencer, você ganha: **{lider['insignia']}** 🎖️"
+            ),
+            color=discord.Color.gold()
+        )
+        embed.add_field(name="Pokémon principal", value=f"**{lider['pokemon'].title()}** Nv. {lider['nivel']}", inline=True)
+        embed.set_image(url=lider["imagem"])
+        await canal.send(embed=embed)
 
 # ===== KEEP ALIVE RENDER =====
 app = Flask(__name__)
