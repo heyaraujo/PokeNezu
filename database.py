@@ -70,7 +70,7 @@ def iniciar_banco():
     """)
 
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS guild_config (
+    CREATE TABLE IF NOT EXISTS configuracoes_servidor (
         guild_id TEXT PRIMARY KEY,
         canal_spawn_id TEXT,
         criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -81,24 +81,24 @@ def iniciar_banco():
     CREATE TABLE IF NOT EXISTS marketplace (
         id SERIAL PRIMARY KEY,
         guild_id TEXT NOT NULL DEFAULT 'global',
-        vendedor_id TEXT NOT NULL,
         pokemon_id INTEGER NOT NULL,
+        seller_id TEXT NOT NULL,
         preco INTEGER NOT NULL,
-        vendido INTEGER DEFAULT 0,
+        ativo INTEGER DEFAULT 1,
         criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
     """)
 
-    # Migração segura para bancos antigos
+    # Migrações para bancos antigos
     cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS guild_id TEXT DEFAULT 'global'")
     cursor.execute("ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS pokemon_ativo_id INTEGER")
     cursor.execute("ALTER TABLE pokemons_capturados ADD COLUMN IF NOT EXISTS guild_id TEXT DEFAULT 'global'")
     cursor.execute("ALTER TABLE pokemons_capturados ADD COLUMN IF NOT EXISTS vendido INTEGER DEFAULT 0")
     cursor.execute("ALTER TABLE insignias ADD COLUMN IF NOT EXISTS guild_id TEXT DEFAULT 'global'")
     cursor.execute("ALTER TABLE marketplace ADD COLUMN IF NOT EXISTS guild_id TEXT DEFAULT 'global'")
-    cursor.execute("ALTER TABLE marketplace ADD COLUMN IF NOT EXISTS vendido INTEGER DEFAULT 0")
+    cursor.execute("ALTER TABLE marketplace ADD COLUMN IF NOT EXISTS ativo INTEGER DEFAULT 1")
 
-    # Remove constraint antiga de usuário global, se existir
+    # Remove constraint antiga global, se existir
     cursor.execute("ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_discord_id_key")
 
     cursor.execute("""
@@ -113,6 +113,7 @@ def iniciar_banco():
 
 def garantir_usuario(discord_id: int, guild_id=None):
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
 
@@ -130,39 +131,57 @@ def garantir_usuario(discord_id: int, guild_id=None):
 def usuario_tem_inicial(discord_id: int, guild_id=None):
     garantir_usuario(discord_id, guild_id)
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
 
-    cursor.execute(
-        "SELECT inicial_escolhido FROM usuarios WHERE guild_id = %s AND discord_id = %s",
-        (guild_id, str(discord_id))
-    )
+    cursor.execute("""
+    SELECT inicial_escolhido
+    FROM usuarios
+    WHERE guild_id = %s AND discord_id = %s
+    """, (guild_id, str(discord_id)))
+
     resultado = cursor.fetchone()
 
     cursor.close()
     conn.close()
+
     return bool(resultado and resultado[0] == 1)
 
 
 def marcar_inicial_escolhido(discord_id: int, guild_id=None):
     garantir_usuario(discord_id, guild_id)
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
 
-    cursor.execute(
-        "UPDATE usuarios SET inicial_escolhido = 1 WHERE guild_id = %s AND discord_id = %s",
-        (guild_id, str(discord_id))
-    )
+    cursor.execute("""
+    UPDATE usuarios
+    SET inicial_escolhido = 1
+    WHERE guild_id = %s AND discord_id = %s
+    """, (guild_id, str(discord_id)))
 
     conn.commit()
     cursor.close()
     conn.close()
 
 
-def adicionar_pokemon(discord_id: int, nome: str, nivel: int, hp: int, ataque: int, defesa: int, velocidade: int, inicial: int = 0, moedas_bonus: int = 10, guild_id=None):
+def adicionar_pokemon(
+    discord_id: int,
+    nome: str,
+    nivel: int,
+    hp: int,
+    ataque: int,
+    defesa: int,
+    velocidade: int,
+    inicial: int = 0,
+    moedas_bonus: int = 10,
+    guild_id=None
+):
     garantir_usuario(discord_id, guild_id)
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
 
@@ -171,14 +190,25 @@ def adicionar_pokemon(discord_id: int, nome: str, nivel: int, hp: int, ataque: i
     (guild_id, discord_id, nome, nivel, hp, ataque, defesa, velocidade, inicial)
     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     RETURNING id
-    """, (guild_id, str(discord_id), nome, nivel, hp, ataque, defesa, velocidade, inicial))
+    """, (
+        guild_id,
+        str(discord_id),
+        nome,
+        nivel,
+        hp,
+        ataque,
+        defesa,
+        velocidade,
+        inicial
+    ))
 
     pokemon_id = cursor.fetchone()[0]
 
-    cursor.execute(
-        "UPDATE usuarios SET moedas = moedas + %s WHERE guild_id = %s AND discord_id = %s",
-        (moedas_bonus, guild_id, str(discord_id))
-    )
+    cursor.execute("""
+    UPDATE usuarios
+    SET moedas = moedas + %s
+    WHERE guild_id = %s AND discord_id = %s
+    """, (moedas_bonus, guild_id, str(discord_id)))
 
     cursor.execute("""
     UPDATE usuarios
@@ -189,17 +219,20 @@ def adicionar_pokemon(discord_id: int, nome: str, nivel: int, hp: int, ataque: i
     conn.commit()
     cursor.close()
     conn.close()
+
     return pokemon_id
 
 
 def atualizar_pokemon(pokemon_id: int, nome: str, hp: int, ataque: int, defesa: int, velocidade: int):
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
     UPDATE pokemons_capturados
     SET nome = %s, hp = %s, ataque = %s, defesa = %s, velocidade = %s
     WHERE id = %s
     """, (nome, hp, ataque, defesa, velocidade, pokemon_id))
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -208,11 +241,13 @@ def atualizar_pokemon(pokemon_id: int, nome: str, hp: int, ataque: int, defesa: 
 def adicionar_nivel_pokemon(pokemon_id: int, quantidade: int = 1):
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
     UPDATE pokemons_capturados
     SET nivel = nivel + %s
     WHERE id = %s
     """, (quantidade, pokemon_id))
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -220,120 +255,141 @@ def adicionar_nivel_pokemon(pokemon_id: int, quantidade: int = 1):
 
 def listar_pokemons(discord_id: int, guild_id=None):
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
     SELECT nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em
     FROM pokemons_capturados
-    WHERE guild_id = %s AND discord_id = %s AND COALESCE(vendido, 0) = 0
+    WHERE discord_id = %s AND guild_id = %s AND COALESCE(vendido, 0) = 0
     ORDER BY id DESC
     LIMIT 25
-    """, (guild_id, str(discord_id)))
+    """, (str(discord_id), guild_id))
+
     dados = cursor.fetchall()
+
     cursor.close()
     conn.close()
+
     return dados
 
 
-def listar_pokemons_com_id(discord_id: int, guild_id=None):
+def primeiro_pokemon(discord_id: int, guild_id=None):
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
-    SELECT id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em
+    SELECT id, nome, nivel, hp, ataque, defesa, velocidade
     FROM pokemons_capturados
-    WHERE guild_id = %s AND discord_id = %s AND COALESCE(vendido, 0) = 0
-    ORDER BY id DESC
-    LIMIT 25
-    """, (guild_id, str(discord_id)))
-    dados = cursor.fetchall()
+    WHERE discord_id = %s AND guild_id = %s AND COALESCE(vendido, 0) = 0
+    ORDER BY id ASC
+    LIMIT 1
+    """, (str(discord_id), guild_id))
+
+    dados = cursor.fetchone()
+
     cursor.close()
     conn.close()
+
     return dados
 
 
 def definir_pokemon_ativo(discord_id: int, pokemon_id: int, guild_id=None):
     garantir_usuario(discord_id, guild_id)
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
     SELECT id FROM pokemons_capturados
     WHERE id = %s AND discord_id = %s AND guild_id = %s AND COALESCE(vendido, 0) = 0
     """, (pokemon_id, str(discord_id), guild_id))
+
     existe = cursor.fetchone()
+
     if not existe:
         cursor.close()
         conn.close()
         return False
 
     cursor.execute("""
-    UPDATE usuarios SET pokemon_ativo_id = %s
+    UPDATE usuarios
+    SET pokemon_ativo_id = %s
     WHERE guild_id = %s AND discord_id = %s
     """, (pokemon_id, guild_id, str(discord_id)))
+
     conn.commit()
     cursor.close()
     conn.close()
+
     return True
 
 
 def pokemon_ativo(discord_id: int, guild_id=None):
     garantir_usuario(discord_id, guild_id)
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
     SELECT p.id, p.nome, p.nivel, p.hp, p.ataque, p.defesa, p.velocidade
     FROM usuarios u
     JOIN pokemons_capturados p ON p.id = u.pokemon_ativo_id
-    WHERE u.guild_id = %s AND u.discord_id = %s AND p.guild_id = %s AND COALESCE(p.vendido, 0) = 0
+    WHERE u.guild_id = %s
+      AND u.discord_id = %s
+      AND p.guild_id = %s
+      AND COALESCE(p.vendido, 0) = 0
     LIMIT 1
     """, (guild_id, str(discord_id), guild_id))
+
     dados = cursor.fetchone()
+
     cursor.close()
     conn.close()
+
     if dados:
         return dados
+
     return primeiro_pokemon(discord_id, guild_id)
-
-
-def primeiro_pokemon(discord_id: int, guild_id=None):
-    guild_id = _guild(guild_id)
-    conn = conectar()
-    cursor = conn.cursor()
-    cursor.execute("""
-    SELECT id, nome, nivel, hp, ataque, defesa, velocidade
-    FROM pokemons_capturados
-    WHERE guild_id = %s AND discord_id = %s AND COALESCE(vendido, 0) = 0
-    ORDER BY id ASC
-    LIMIT 1
-    """, (guild_id, str(discord_id)))
-    dados = cursor.fetchone()
-    cursor.close()
-    conn.close()
-    return dados
 
 
 def saldo_usuario(discord_id: int, guild_id=None):
     garantir_usuario(discord_id, guild_id)
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
-    cursor.execute("SELECT moedas FROM usuarios WHERE guild_id = %s AND discord_id = %s", (guild_id, str(discord_id)))
+
+    cursor.execute("""
+    SELECT moedas
+    FROM usuarios
+    WHERE guild_id = %s AND discord_id = %s
+    """, (guild_id, str(discord_id)))
+
     resultado = cursor.fetchone()
+
     cursor.close()
     conn.close()
+
     return resultado[0] if resultado else 0
 
 
 def adicionar_insignia(discord_id: int, nome: str, guild_id=None):
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
     INSERT INTO insignias (guild_id, discord_id, nome)
     VALUES (%s, %s, %s)
     """, (guild_id, str(discord_id), nome))
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -341,32 +397,38 @@ def adicionar_insignia(discord_id: int, nome: str, guild_id=None):
 
 def listar_insignias(discord_id: int, guild_id=None):
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
     SELECT nome, criado_em
     FROM insignias
     WHERE guild_id = %s AND discord_id = %s
     ORDER BY criado_em DESC
     """, (guild_id, str(discord_id)))
+
     dados = cursor.fetchall()
+
     cursor.close()
     conn.close()
+
     return dados
 
 
-# CONFIG CANAL SPAWN POR SERVIDOR
-
 def configurar_canal_spawn(guild_id: int, canal_id: int):
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
-    INSERT INTO guild_config (guild_id, canal_spawn_id)
+    INSERT INTO configuracoes_servidor (guild_id, canal_spawn_id)
     VALUES (%s, %s)
     ON CONFLICT (guild_id)
     DO UPDATE SET canal_spawn_id = EXCLUDED.canal_spawn_id
     """, (guild_id, str(canal_id)))
+
     conn.commit()
     cursor.close()
     conn.close()
@@ -374,108 +436,198 @@ def configurar_canal_spawn(guild_id: int, canal_id: int):
 
 def buscar_canal_spawn(guild_id: int):
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
-    cursor.execute("SELECT canal_spawn_id FROM guild_config WHERE guild_id = %s LIMIT 1", (guild_id,))
+
+    cursor.execute("""
+    SELECT canal_spawn_id
+    FROM configuracoes_servidor
+    WHERE guild_id = %s
+    LIMIT 1
+    """, (guild_id,))
+
     resultado = cursor.fetchone()
+
     cursor.close()
     conn.close()
+
     return int(resultado[0]) if resultado and resultado[0] else None
 
 
-# MARKETPLACE POR SERVIDOR
-
-def criar_anuncio_marketplace(vendedor_id: int, pokemon_id: int, preco: int, guild_id=None):
+def criar_anuncio_marketplace(discord_id: int, pokemon_id: int, preco: int, guild_id=None):
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
     SELECT id FROM pokemons_capturados
     WHERE id = %s AND discord_id = %s AND guild_id = %s AND COALESCE(vendido, 0) = 0
-    """, (pokemon_id, str(vendedor_id), guild_id))
+    """, (pokemon_id, str(discord_id), guild_id))
+
     existe = cursor.fetchone()
+
     if not existe:
         cursor.close()
         conn.close()
         return None
 
-    cursor.execute("UPDATE pokemons_capturados SET vendido = 1 WHERE id = %s AND guild_id = %s", (pokemon_id, guild_id))
     cursor.execute("""
-    INSERT INTO marketplace (guild_id, vendedor_id, pokemon_id, preco, vendido)
-    VALUES (%s, %s, %s, %s, 0)
+    UPDATE pokemons_capturados
+    SET vendido = 1
+    WHERE id = %s AND guild_id = %s
+    """, (pokemon_id, guild_id))
+
+    cursor.execute("""
+    INSERT INTO marketplace (guild_id, pokemon_id, seller_id, preco, ativo)
+    VALUES (%s, %s, %s, %s, 1)
     RETURNING id
-    """, (guild_id, str(vendedor_id), pokemon_id, preco))
+    """, (guild_id, pokemon_id, str(discord_id), preco))
+
     anuncio_id = cursor.fetchone()[0]
+
     conn.commit()
     cursor.close()
     conn.close()
+
     return anuncio_id
 
 
 def listar_marketplace_ativos(guild_id=None, limite: int = 15):
+    # Compatibilidade caso chamem listar_marketplace_ativos(15)
+    if isinstance(guild_id, int) and limite == 15:
+        # Se o primeiro argumento for claramente limite, use global
+        # Mas na main corrigida enviamos guild_id primeiro.
+        pass
+
     guild_id = _guild(guild_id)
+
     conn = conectar()
     cursor = conn.cursor()
+
     cursor.execute("""
-    SELECT m.id, m.pokemon_id, m.vendedor_id, m.preco,
-           p.nome, p.nivel, p.hp, p.ataque, p.defesa, p.velocidade
+    SELECT 
+        m.id,
+        p.id,
+        m.seller_id,
+        m.preco,
+        p.nome,
+        p.nivel,
+        p.hp,
+        p.ataque,
+        p.defesa,
+        p.velocidade
     FROM marketplace m
     JOIN pokemons_capturados p ON p.id = m.pokemon_id
-    WHERE m.guild_id = %s AND COALESCE(m.vendido, 0) = 0
+    WHERE m.guild_id = %s AND COALESCE(m.ativo, 1) = 1
     ORDER BY m.id DESC
     LIMIT %s
     """, (guild_id, limite))
+
     dados = cursor.fetchall()
+
     cursor.close()
     conn.close()
+
     return dados
 
 
 def comprar_marketplace_item(comprador_id: int, anuncio_id: int, guild_id=None):
     guild_id = _guild(guild_id)
     comprador_id = str(comprador_id)
+
     conn = conectar()
     cursor = conn.cursor()
+
     try:
         cursor.execute("""
-        SELECT m.id, m.vendedor_id, m.pokemon_id, m.preco, p.nome
+        SELECT 
+            m.id,
+            m.seller_id,
+            m.pokemon_id,
+            m.preco,
+            p.nome
         FROM marketplace m
         JOIN pokemons_capturados p ON p.id = m.pokemon_id
-        WHERE m.id = %s AND m.guild_id = %s AND COALESCE(m.vendido, 0) = 0
+        WHERE m.id = %s AND m.guild_id = %s AND COALESCE(m.ativo, 1) = 1
         FOR UPDATE
         """, (anuncio_id, guild_id))
-        item = cursor.fetchone()
-        if not item:
-            conn.rollback()
-            return {"ok": False, "erro": "Esse anúncio não existe ou já foi vendido."}
 
-        _, vendedor_id, pokemon_id, preco, nome = item
-        if vendedor_id == comprador_id:
+        anuncio = cursor.fetchone()
+
+        if not anuncio:
+            conn.rollback()
+            return {"ok": False, "erro": "Anúncio não encontrado ou já comprado."}
+
+        _, seller_id, pokemon_id, preco, nome = anuncio
+
+        if str(seller_id) == comprador_id:
             conn.rollback()
             return {"ok": False, "erro": "Você não pode comprar seu próprio Pokémon."}
 
-        garantir_usuario(comprador_id, guild_id)
-        garantir_usuario(vendedor_id, guild_id)
+        # Garante comprador/vendedor
+        cursor.execute("""
+        INSERT INTO usuarios (guild_id, discord_id, moedas, inicial_escolhido)
+        VALUES (%s, %s, 0, 0)
+        ON CONFLICT (guild_id, discord_id) DO NOTHING
+        """, (guild_id, comprador_id))
 
-        cursor.execute("SELECT moedas FROM usuarios WHERE guild_id = %s AND discord_id = %s FOR UPDATE", (guild_id, comprador_id))
+        cursor.execute("""
+        INSERT INTO usuarios (guild_id, discord_id, moedas, inicial_escolhido)
+        VALUES (%s, %s, 0, 0)
+        ON CONFLICT (guild_id, discord_id) DO NOTHING
+        """, (guild_id, str(seller_id)))
+
+        cursor.execute("""
+        SELECT moedas FROM usuarios
+        WHERE guild_id = %s AND discord_id = %s
+        FOR UPDATE
+        """, (guild_id, comprador_id))
+
         saldo = cursor.fetchone()
+
         if not saldo or saldo[0] < preco:
             conn.rollback()
             return {"ok": False, "erro": "Você não tem moedas suficientes."}
 
-        cursor.execute("UPDATE usuarios SET moedas = moedas - %s WHERE guild_id = %s AND discord_id = %s", (preco, guild_id, comprador_id))
-        cursor.execute("UPDATE usuarios SET moedas = moedas + %s WHERE guild_id = %s AND discord_id = %s", (preco, guild_id, vendedor_id))
-        cursor.execute("UPDATE pokemons_capturados SET discord_id = %s, vendido = 0 WHERE id = %s AND guild_id = %s", (comprador_id, pokemon_id, guild_id))
-        cursor.execute("UPDATE marketplace SET vendido = 1 WHERE id = %s AND guild_id = %s", (anuncio_id, guild_id))
         cursor.execute("""
-        UPDATE usuarios SET pokemon_ativo_id = COALESCE(pokemon_ativo_id, %s)
+        UPDATE usuarios
+        SET moedas = moedas - %s
+        WHERE guild_id = %s AND discord_id = %s
+        """, (preco, guild_id, comprador_id))
+
+        cursor.execute("""
+        UPDATE usuarios
+        SET moedas = moedas + %s
+        WHERE guild_id = %s AND discord_id = %s
+        """, (preco, guild_id, str(seller_id)))
+
+        cursor.execute("""
+        UPDATE pokemons_capturados
+        SET discord_id = %s, vendido = 0
+        WHERE id = %s AND guild_id = %s
+        """, (comprador_id, pokemon_id, guild_id))
+
+        cursor.execute("""
+        UPDATE marketplace
+        SET ativo = 0
+        WHERE id = %s AND guild_id = %s
+        """, (anuncio_id, guild_id))
+
+        cursor.execute("""
+        UPDATE usuarios
+        SET pokemon_ativo_id = COALESCE(pokemon_ativo_id, %s)
         WHERE guild_id = %s AND discord_id = %s
         """, (pokemon_id, guild_id, comprador_id))
+
         conn.commit()
         return {"ok": True, "pokemon": nome, "preco": preco}
+
     except Exception as erro:
         conn.rollback()
         return {"ok": False, "erro": str(erro)}
+
     finally:
         cursor.close()
         conn.close()

@@ -53,6 +53,10 @@ TEMPO_SPAWN_MINUTOS = int(os.getenv("TEMPO_SPAWN_MINUTOS", "50"))
 intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
+def obter_guild_id(interaction: discord.Interaction):
+    return interaction.guild.id if interaction.guild else interaction.channel.id
+
+
 # Spawn separado por servidor: {guild_id: {canal_id, pokemon, nivel}}
 pokemon_atual = {}
 
@@ -458,17 +462,17 @@ def pokemon_dict_para_tuple(pokemon, nivel):
 
 
 
-def listar_pokemons_com_id(discord_id: int):
+def listar_pokemons_com_id(discord_id: int, guild_id):
     conn = conectar()
     cursor = conn.cursor()
 
     cursor.execute("""
     SELECT id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em
     FROM pokemons_capturados
-    WHERE discord_id = %s
+    WHERE discord_id = %s AND guild_id = %s AND COALESCE(vendido, 0) = 0
     ORDER BY id ASC
     LIMIT 25
-    """, (str(discord_id),))
+    """, (str(discord_id), str(guild_id)))
 
     dados = cursor.fetchall()
     cursor.close()
@@ -476,16 +480,16 @@ def listar_pokemons_com_id(discord_id: int):
     return dados
 
 
-def buscar_pokemon_por_id(discord_id: int, pokemon_id: int):
+def buscar_pokemon_por_id(discord_id: int, pokemon_id: int, guild_id):
     conn = conectar()
     cursor = conn.cursor()
 
     cursor.execute("""
     SELECT id, nome, nivel, hp, ataque, defesa, velocidade
     FROM pokemons_capturados
-    WHERE discord_id = %s AND id = %s
+    WHERE discord_id = %s AND id = %s AND guild_id = %s AND COALESCE(vendido, 0) = 0
     LIMIT 1
-    """, (str(discord_id), pokemon_id))
+    """, (str(discord_id), pokemon_id, str(guild_id)))
 
     dados = cursor.fetchone()
     cursor.close()
@@ -493,16 +497,16 @@ def buscar_pokemon_por_id(discord_id: int, pokemon_id: int):
     return dados
 
 
-def pokemon_ativo_ou_primeiro(discord_id: int):
-    return pokemon_ativo_banco(discord_id)
+def pokemon_ativo_ou_primeiro(discord_id: int, guild_id):
+    return pokemon_ativo_banco(discord_id, guild_id)
 
 
-def salvar_insignia(discord_id: int, insignia: str):
-    adicionar_insignia(discord_id, insignia)
+def salvar_insignia(discord_id: int, insignia: str, guild_id):
+    adicionar_insignia(discord_id, insignia, guild_id)
 
 
-def listar_insignias(discord_id: int):
-    dados = listar_insignias_banco(discord_id)
+def listar_insignias(discord_id: int, guild_id):
+    dados = listar_insignias_banco(discord_id, guild_id)
     return [item[0] for item in dados]
 
 
@@ -833,7 +837,7 @@ class BatalhaGinasioView(discord.ui.View):
         if self.hp_lider <= 0:
             terminou = True
             adicionar_nivel_pokemon(meu_id, 2)
-            salvar_insignia(self.jogador.id, self.lider["insignia"])
+            salvar_insignia(self.jogador.id, self.lider["insignia"], obter_guild_id(interaction))
             embed.add_field(name="🎖️ Vitória de Ginásio!", value=f"Você ganhou **{self.lider['insignia']}** e seu **{meu_nome.title()}** ganhou **+2 níveis**!", inline=False)
             guild_id = interaction.guild.id if interaction.guild else interaction.channel.id
             lider_ginasio_atual.pop(guild_id, None)
@@ -1139,12 +1143,9 @@ async def tutorial(interaction: discord.Interaction):
 async def iniciar(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    guild_id = interaction.guild.id if interaction.guild else None
+    guild_id = obter_guild_id(interaction)
 
-    try:
-        ja_iniciou = usuario_tem_inicial(interaction.user.id, guild_id)
-    except TypeError:
-        ja_iniciou = usuario_tem_inicial(interaction.user.id)
+    ja_iniciou = usuario_tem_inicial(interaction.user.id, guild_id)
 
     if ja_iniciou:
         await interaction.followup.send(
@@ -1176,7 +1177,7 @@ async def escolher(interaction: discord.Interaction, pokemon: str):
 
     nome = normalizar_nome(pokemon)
 
-    if usuario_tem_inicial(interaction.user.id):
+    if usuario_tem_inicial(interaction.user.id, obter_guild_id(interaction)):
         await interaction.followup.send(
             "❌ Você já escolheu seu Pokémon inicial.",
             ephemeral=True
@@ -1208,10 +1209,11 @@ async def escolher(interaction: discord.Interaction, pokemon: str):
         defesa=dados["defesa"],
         velocidade=dados["velocidade"],
         inicial=1,
-        moedas_bonus=0
+        moedas_bonus=0,
+        guild_id=obter_guild_id(interaction)
     )
 
-    marcar_inicial_escolhido(interaction.user.id)
+    marcar_inicial_escolhido(interaction.user.id, obter_guild_id(interaction))
 
     embed = discord.Embed(
         title="🎉 Parabéns!",
@@ -1262,7 +1264,8 @@ async def capturar(interaction: discord.Interaction, nome: str):
         defesa=pokemon["defesa"],
         velocidade=pokemon["velocidade"],
         inicial=0,
-        moedas_bonus=10
+        moedas_bonus=10,
+        guild_id=obter_guild_id(interaction)
     )
 
     embed = discord.Embed(
@@ -1297,7 +1300,7 @@ async def capturar(interaction: discord.Interaction, nome: str):
 async def pokemon(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    dados = listar_pokemons(interaction.user.id)
+    dados = listar_pokemons(interaction.user.id, obter_guild_id(interaction))
 
     if not dados:
         await interaction.followup.send(
@@ -1381,8 +1384,8 @@ async def batalhar(interaction: discord.Interaction, usuario: discord.Member):
         await interaction.followup.send("❌ Você não pode batalhar contra você mesmo.", ephemeral=True)
         return
 
-    pokemons_p1 = listar_pokemons_com_id(interaction.user.id)
-    pokemons_p2 = listar_pokemons_com_id(usuario.id)
+    pokemons_p1 = listar_pokemons_com_id(interaction.user.id, obter_guild_id(interaction))
+    pokemons_p2 = listar_pokemons_com_id(usuario.id, obter_guild_id(interaction))
 
     if not pokemons_p1:
         await interaction.followup.send("❌ Você ainda não tem Pokémon. Use `/iniciar`.", ephemeral=True)
@@ -1481,7 +1484,7 @@ class EscolherPokemonPVPView(discord.ui.View):
 
         await interaction.response.defer()
         pokemon_id = int(self.select_p1.values[0])
-        self.escolha_p1 = buscar_pokemon_por_id(self.j1.id, pokemon_id)
+        self.escolha_p1 = buscar_pokemon_por_id(self.j1.id, pokemon_id, obter_guild_id(interaction))
         await self.iniciar_se_pronto(interaction)
 
     async def escolher_p2(self, interaction: discord.Interaction):
@@ -1491,7 +1494,7 @@ class EscolherPokemonPVPView(discord.ui.View):
 
         await interaction.response.defer()
         pokemon_id = int(self.select_p2.values[0])
-        self.escolha_p2 = buscar_pokemon_por_id(self.j2.id, pokemon_id)
+        self.escolha_p2 = buscar_pokemon_por_id(self.j2.id, pokemon_id, obter_guild_id(interaction))
         await self.iniciar_se_pronto(interaction)
 
     async def iniciar_se_pronto(self, interaction: discord.Interaction):
@@ -1581,7 +1584,7 @@ class EscolherPokemonNPCView(discord.ui.View):
         await interaction.response.defer()
 
         pokemon_id = int(self.select.values[0])
-        meu_pokemon = buscar_pokemon_por_id(interaction.user.id, pokemon_id)
+        meu_pokemon = buscar_pokemon_por_id(interaction.user.id, pokemon_id, obter_guild_id(interaction))
 
         if not meu_pokemon:
             await interaction.followup.send("❌ Pokémon não encontrado.", ephemeral=True)
@@ -1653,7 +1656,7 @@ async def batalhar_npc(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
     try:
-        pokemons = listar_pokemons_com_id(interaction.user.id)
+        pokemons = listar_pokemons_com_id(interaction.user.id, obter_guild_id(interaction))
 
         if not pokemons:
             await interaction.followup.send(
@@ -1692,7 +1695,7 @@ async def batalhar_npc(interaction: discord.Interaction):
 async def selecionar(interaction: discord.Interaction, indice: int):
     await interaction.response.defer(ephemeral=True)
 
-    pokemons = listar_pokemons_com_id(interaction.user.id)
+    pokemons = listar_pokemons_com_id(interaction.user.id, obter_guild_id(interaction))
     if not pokemons:
         await interaction.followup.send("❌ Você ainda não tem Pokémon.", ephemeral=True)
         return
@@ -1704,7 +1707,7 @@ async def selecionar(interaction: discord.Interaction, indice: int):
     escolhido = pokemons[indice - 1]
     pokemon_id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = escolhido
 
-    if not definir_pokemon_ativo(interaction.user.id, pokemon_id):
+    if not definir_pokemon_ativo(interaction.user.id, pokemon_id, obter_guild_id(interaction)):
         await interaction.followup.send("❌ Não consegui selecionar esse Pokémon.", ephemeral=True)
         return
 
@@ -1723,7 +1726,7 @@ async def selecionar(interaction: discord.Interaction, indice: int):
 
 @bot.tree.command(name="insignias", description="Mostra suas insígnias de ginásio.")
 async def insignias(interaction: discord.Interaction):
-    minhas = listar_insignias(interaction.user.id)
+    minhas = listar_insignias(interaction.user.id, obter_guild_id(interaction))
     if not minhas:
         await interaction.response.send_message("🎖️ Você ainda não ganhou nenhuma insígnia.", ephemeral=True)
         return
@@ -1768,7 +1771,7 @@ class EscolherPokemonGinasioView(discord.ui.View):
         await interaction.response.defer()
 
         pokemon_id = int(self.select.values[0])
-        meu_pokemon = buscar_pokemon_por_id(interaction.user.id, pokemon_id)
+        meu_pokemon = buscar_pokemon_por_id(interaction.user.id, pokemon_id, obter_guild_id(interaction))
 
         if not meu_pokemon:
             await interaction.followup.send("❌ Pokémon não encontrado.", ephemeral=True)
@@ -1854,7 +1857,7 @@ async def batalhar_ginasio(interaction: discord.Interaction):
         await interaction.followup.send("❌ Esse líder de ginásio já foi embora.", ephemeral=True)
         return
 
-    pokemons = listar_pokemons_com_id(interaction.user.id)
+    pokemons = listar_pokemons_com_id(interaction.user.id, obter_guild_id(interaction))
 
     if not pokemons:
         await interaction.followup.send("❌ Você ainda não tem Pokémon. Use `/iniciar` primeiro.", ephemeral=True)
@@ -1887,7 +1890,7 @@ async def batalhar_ginasio(interaction: discord.Interaction):
 
 @bot.tree.command(name="saldo", description="Mostra seu saldo de moedas.")
 async def saldo(interaction: discord.Interaction):
-    moedas = saldo_usuario(interaction.user.id)
+    moedas = saldo_usuario(interaction.user.id, obter_guild_id(interaction))
     await interaction.response.send_message(
         f"💰 {interaction.user.mention}, você tem **{moedas} moedas**.",
         ephemeral=True
@@ -2042,7 +2045,7 @@ class MarketplaceView(discord.ui.View):
     async def comprar_callback(self, interaction: discord.Interaction):
         try:
             item_id = int(interaction.data["custom_id"].replace("comprar_market_", ""))
-            resultado = comprar_marketplace_item(interaction.user.id, item_id)
+            resultado = comprar_marketplace_item(interaction.user.id, item_id, obter_guild_id(interaction))
             if not resultado["ok"]:
                 await interaction.response.send_message(f"❌ {resultado['erro']}", ephemeral=True)
                 return
@@ -2075,7 +2078,7 @@ async def vender_pokemon(interaction: discord.Interaction, indice: int, preco: i
         await interaction.followup.send("❌ O preço precisa ser maior que zero.", ephemeral=True)
         return
 
-    pokemons = listar_pokemons_com_id(interaction.user.id)
+    pokemons = listar_pokemons_com_id(interaction.user.id, obter_guild_id(interaction))
     if not pokemons:
         await interaction.followup.send("❌ Você ainda não tem Pokémon.", ephemeral=True)
         return
@@ -2085,7 +2088,7 @@ async def vender_pokemon(interaction: discord.Interaction, indice: int, preco: i
 
     escolhido = pokemons[indice - 1]
     pokemon_id, nome, nivel, hp, ataque, defesa, velocidade, inicial, criado_em = escolhido
-    anuncio_id = criar_anuncio_marketplace(interaction.user.id, pokemon_id, preco)
+    anuncio_id = criar_anuncio_marketplace(interaction.user.id, pokemon_id, preco, obter_guild_id(interaction))
 
     await interaction.followup.send(
         f"✅ **{nome.title()}** foi anunciado no marketplace por **{preco} pc**. ID do anúncio: `{anuncio_id}`",
@@ -2097,7 +2100,7 @@ async def vender_pokemon(interaction: discord.Interaction, indice: int, preco: i
 async def marketplace(interaction: discord.Interaction):
     await interaction.response.defer()
 
-    anuncios = listar_marketplace_ativos(15)
+    anuncios = listar_marketplace_ativos(obter_guild_id(interaction), 15)
     if not anuncios:
         await interaction.followup.send("📭 Nenhum Pokémon à venda no momento.", ephemeral=True)
         return
