@@ -1157,9 +1157,9 @@ async def iniciar(interaction: discord.Interaction):
     file = discord.File(caminho, filename="iniciar_pokenezu.png")
 
     embed = discord.Embed(
-        title="Welcome to the world of Pokémon!",
+        title="Bem-vindo ao mundo Pokémon!",
         description=(
-            "To start, choose one of the starter pokémon using the "
+            "Para começar, escolha um dos Pokémon iniciais usando o "
             "`/escolher pokemon:<pokemon>` command."
         ),
         color=discord.Color.from_rgb(255, 105, 180)
