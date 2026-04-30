@@ -63,6 +63,27 @@ def iniciar_banco():
     )
     """)
 
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS server_config (
+        guild_id TEXT PRIMARY KEY,
+        spawn_channel_id TEXT,
+        atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS marketplace (
+        id SERIAL PRIMARY KEY,
+        pokemon_id INTEGER NOT NULL,
+        seller_id TEXT NOT NULL,
+        preco INTEGER NOT NULL,
+        status TEXT DEFAULT 'ativo',
+        comprador_id TEXT,
+        criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        vendido_em TIMESTAMP
+    )
+    """)
     conn.commit()
     cursor.close()
     conn.close()
@@ -366,3 +387,147 @@ def listar_insignias(discord_id: int):
     conn.close()
 
     return dados
+
+# ===== CONFIGURAÇÃO POR SERVIDOR =====
+def configurar_canal_spawn(guild_id: int, canal_id: int):
+    conn = conectar()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    INSERT INTO server_config (guild_id, spawn_channel_id, atualizado_em)
+    VALUES (%s, %s, CURRENT_TIMESTAMP)
+    ON CONFLICT (guild_id)
+    DO UPDATE SET spawn_channel_id = EXCLUDED.spawn_channel_id, atualizado_em = CURRENT_TIMESTAMP
+    """, (str(guild_id), str(canal_id)))
+
+    conn.commit()
+    cursor.close()
+    conn.close()
+
+
+def buscar_canal_spawn(guild_id: int):
+    conn = conectar()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT spawn_channel_id FROM server_config WHERE guild_id = %s", (str(guild_id),))
+    row = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+
+    return row[0] if row else None
+
+
+# ===== MARKETPLACE =====
+def criar_anuncio_marketplace(seller_id: int, pokemon_id: int, preco: int):
+    conn = conectar()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT id FROM pokemons_capturados
+    WHERE id = %s AND discord_id = %s
+    LIMIT 1
+    """, (pokemon_id, str(seller_id)))
+
+    if not cursor.fetchone():
+        cursor.close()
+        conn.close()
+        raise ValueError("Esse Pokémon não pertence ao vendedor.")
+
+    cursor.execute("""
+    SELECT id FROM marketplace
+    WHERE pokemon_id = %s AND status = 'ativo'
+    LIMIT 1
+    """, (pokemon_id,))
+
+    if cursor.fetchone():
+        cursor.close()
+        conn.close()
+        raise ValueError("Esse Pokémon já está anunciado.")
+
+    cursor.execute("""
+    INSERT INTO marketplace (pokemon_id, seller_id, preco, status)
+    VALUES (%s, %s, %s, 'ativo')
+    RETURNING id
+    """, (pokemon_id, str(seller_id), preco))
+
+    anuncio_id = cursor.fetchone()[0]
+    conn.commit()
+    cursor.close()
+    conn.close()
+    return anuncio_id
+
+
+def listar_marketplace_ativos(limite: int = 15):
+    conn = conectar()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    SELECT m.id, m.pokemon_id, m.seller_id, m.preco,
+           p.nome, p.nivel, p.hp, p.ataque, p.defesa, p.velocidade
+    FROM marketplace m
+    JOIN pokemons_capturados p ON p.id = m.pokemon_id
+    WHERE m.status = 'ativo'
+    ORDER BY m.id DESC
+    LIMIT %s
+    """, (limite,))
+
+    dados = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return dados
+
+
+def comprar_marketplace_item(buyer_id: int, anuncio_id: int):
+    conn = conectar()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+        SELECT m.id, m.pokemon_id, m.seller_id, m.preco, p.nome
+        FROM marketplace m
+        JOIN pokemons_capturados p ON p.id = m.pokemon_id
+        WHERE m.id = %s AND m.status = 'ativo'
+        FOR UPDATE
+        """, (anuncio_id,))
+
+        anuncio = cursor.fetchone()
+        if not anuncio:
+            conn.rollback()
+            return {"ok": False, "erro": "Anúncio não encontrado ou já vendido."}
+
+        _, pokemon_id, seller_id, preco, nome = anuncio
+
+        if str(buyer_id) == str(seller_id):
+            conn.rollback()
+            return {"ok": False, "erro": "Você não pode comprar seu próprio Pokémon."}
+
+        garantir_usuario(buyer_id)
+        garantir_usuario(seller_id)
+
+        cursor.execute("SELECT moedas FROM usuarios WHERE discord_id = %s", (str(buyer_id),))
+        saldo = cursor.fetchone()[0]
+
+        if saldo < preco:
+            conn.rollback()
+            return {"ok": False, "erro": "Saldo insuficiente."}
+
+        cursor.execute("UPDATE usuarios SET moedas = moedas - %s WHERE discord_id = %s", (preco, str(buyer_id)))
+        cursor.execute("UPDATE usuarios SET moedas = moedas + %s WHERE discord_id = %s", (preco, str(seller_id)))
+        cursor.execute("UPDATE pokemons_capturados SET discord_id = %s WHERE id = %s", (str(buyer_id), pokemon_id))
+        cursor.execute("""
+        UPDATE marketplace
+        SET status = 'vendido', comprador_id = %s, vendido_em = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """, (str(buyer_id), anuncio_id))
+
+        conn.commit()
+        return {"ok": True, "pokemon": nome, "preco": preco}
+
+    except Exception as erro:
+        conn.rollback()
+        return {"ok": False, "erro": str(erro)}
+
+    finally:
+        cursor.close()
+        conn.close()
