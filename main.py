@@ -4,7 +4,7 @@ import asyncio
 import aiohttp
 import time
 import discord
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 import requests
 from io import BytesIO
 from flask import Flask
@@ -759,7 +759,8 @@ class BatalhaNPCView(discord.ui.View):
             self.hp_meu,
             self.hp_npc,
             self.hp_meu_max,
-            self.hp_npc_max
+            self.hp_npc_max,
+            log
         )
 
         file = discord.File(caminho, filename="batalha.png")
@@ -850,14 +851,24 @@ class BatalhaGinasioView(discord.ui.View):
         else:
             self.turno += 1
             embed.set_footer(text=f"Turno {self.turno} — escolha o próximo ataque.")
-        if self.lider.get("imagem"):
-            embed.set_image(url=self.lider["imagem"])
         if self.pokemon_lider.get("sprite"):
             embed.set_thumbnail(url=self.pokemon_lider["sprite"])
         if terminou:
             for item in self.children:
                 item.disabled = True
-        await interaction.response.edit_message(embed=embed, view=self)
+
+        caminho = gerar_imagem_batalha(
+            {"sprite": self.meu_info.get("sprite"), "nome": meu_nome, "nivel": meu_nivel},
+            {"sprite": self.pokemon_lider.get("sprite"), "nome": self.pokemon_lider.get("nome"), "nivel": self.lider["nivel"]},
+            self.hp_meu,
+            self.hp_lider,
+            self.hp_meu_max,
+            self.hp_lider_max,
+            log
+        )
+        file = discord.File(caminho, filename="batalha.png")
+        embed.set_image(url="attachment://batalha.png")
+        await interaction.response.edit_message(embed=embed, attachments=[file], view=self)
 
 class BatalhaPVPView(discord.ui.View):
     def __init__(self, jogador1, jogador2, p1, p2, p1_info, p2_info, ataques_p1=None, ataques_p2=None):
@@ -1068,7 +1079,18 @@ class BatalhaPVPView(discord.ui.View):
             for item in self.children:
                 item.disabled = True
 
-        await interaction.message.edit(embed=embed, view=self)
+        caminho = gerar_imagem_batalha(
+            {"sprite": self.p1_info.get("sprite"), "nome": nome1, "nivel": nivel1},
+            {"sprite": self.p2_info.get("sprite"), "nome": nome2, "nivel": nivel2},
+            self.hp1,
+            self.hp2,
+            self.hp1_max,
+            self.hp2_max,
+            log
+        )
+        file = discord.File(caminho, filename="batalha.png")
+        embed.set_image(url="attachment://batalha.png")
+        await interaction.message.edit(embed=embed, attachments=[file], view=self)
 
 
 @bot.event
@@ -1547,7 +1569,18 @@ class EscolherPokemonPVPView(discord.ui.View):
         ataques_p2 = await buscar_ataques_reais(p2[1])
 
         view = BatalhaPVPView(self.j1, self.j2, p1, p2, p1_info, p2_info, ataques_p1, ataques_p2)
-        await interaction.message.edit(content=None, embed=embed, view=view)
+        caminho = gerar_imagem_batalha(
+            {"sprite": p1_info.get("sprite"), "nome": p1[1], "nivel": p1[2]},
+            {"sprite": p2_info.get("sprite"), "nome": p2[1], "nivel": p2[2]},
+            hp1,
+            hp2,
+            hp1,
+            hp2,
+            ["A batalha PvP começou!", "Escolham seus ataques."]
+        )
+        file = discord.File(caminho, filename="batalha.png")
+        embed.set_image(url="attachment://batalha.png")
+        await interaction.message.edit(content=None, embed=embed, attachments=[file], view=view)
 
 
 class EscolherPokemonNPCView(discord.ui.View):
@@ -1648,7 +1681,18 @@ class EscolherPokemonNPCView(discord.ui.View):
             ataques_npc=ataques_npc
         )
 
-        await interaction.edit_original_response(embed=embed, view=view)
+        caminho = gerar_imagem_batalha(
+            {"sprite": meu_info.get("sprite"), "nome": meu_pokemon[1], "nivel": meu_pokemon[2]},
+            {"sprite": pokemon_npc.get("sprite"), "nome": pokemon_npc.get("nome"), "nivel": nivel_npc},
+            hp_meu,
+            hp_npc,
+            hp_meu,
+            hp_npc,
+            ["A batalha começou! Escolha seu ataque."]
+        )
+        file = discord.File(caminho, filename="batalha.png")
+        embed.set_image(url="attachment://batalha.png")
+        await interaction.edit_original_response(embed=embed, attachments=[file], view=view)
 
 
 @bot.tree.command(name="batalhar_npc", description="Escolha um Pokémon e batalhe contra um NPC.")
@@ -1959,45 +2003,101 @@ def _carregar_sprite(url, tamanho=(120, 120)):
         return None
 
 
-def gerar_imagem_batalha(pokemon1, pokemon2, hp1, hp2, hp1_max, hp2_max):
+def gerar_imagem_batalha(pokemon1, pokemon2, hp1, hp2, hp1_max, hp2_max, log_linhas=None):
+    """Gera uma imagem de batalha no estilo Pokétwo/Pokémon clássico."""
     largura, altura = 760, 420
-    img = Image.new("RGB", (largura, altura), (14, 45, 10))
+    img = Image.new("RGB", (largura, altura), (10, 35, 8))
     draw = ImageDraw.Draw(img)
 
-    # fundo em faixas verdes estilo batalha clássica
-    for y in range(0, 300, 18):
-        cor = (18 + (y % 36), 80 + (y % 54), 12)
-        draw.rectangle([0, y, largura, y + 18], fill=cor)
+    try:
+        fonte = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
+        fonte_menor = ImageFont.truetype("DejaVuSans-Bold.ttf", 15)
+        fonte_log = ImageFont.truetype("DejaVuSansMono.ttf", 18)
+    except Exception:
+        fonte = ImageFont.load_default()
+        fonte_menor = ImageFont.load_default()
+        fonte_log = ImageFont.load_default()
 
-    # plataformas
-    draw.ellipse([40, 250, 360, 380], fill=(55, 170, 65), outline=(190, 150, 45), width=5)
-    draw.ellipse([430, 115, 720, 230], fill=(55, 170, 65), outline=(190, 150, 45), width=5)
+    # Fundo verde em faixas, parecido com Pokétwo
+    for y in range(0, 315):
+        base = int(25 + (y / 315) * 115)
+        cor = (8, max(45, base), 8) if (y // 14) % 2 == 0 else (12, max(55, base + 12), 10)
+        draw.line([(0, y), (largura, y)], fill=cor)
 
-    p1_img = _carregar_sprite(pokemon1.get("sprite"), (150, 150))
-    p2_img = _carregar_sprite(pokemon2.get("sprite"), (130, 130))
+    # Brilho no centro
+    for y in range(145, 255):
+        intensidade = int(55 * (1 - abs(y - 200) / 60))
+        draw.line([(0, y), (largura, y)], fill=(30, 145 + max(0, intensidade), 20))
+
+    # Plataformas de grama
+    def plataforma(cx, cy, rx, ry):
+        draw.ellipse([cx-rx, cy-ry, cx+rx, cy+ry], fill=(184, 146, 48), outline=(92, 82, 22), width=4)
+        draw.ellipse([cx-rx+10, cy-ry-8, cx+rx-10, cy+ry-8], fill=(72, 188, 78), outline=(25, 105, 38), width=3)
+        for i in range(-rx+20, rx-20, 18):
+            x = cx + i
+            draw.line([(x, cy-ry+15), (x+5, cy-ry+2)], fill=(30, 125, 45), width=2)
+            draw.line([(x+5, cy-ry+2), (x+10, cy-ry+15)], fill=(30, 125, 45), width=2)
+
+    plataforma(185, 325, 180, 60)
+    plataforma(570, 190, 170, 55)
+
+    # Sprites
+    p1_img = _carregar_sprite(pokemon1.get("sprite"), (168, 168))
+    p2_img = _carregar_sprite(pokemon2.get("sprite"), (150, 150))
+
     if p1_img:
-        img.paste(p1_img, (115, 190), p1_img)
+        img.paste(p1_img, (88, 190), p1_img)
     if p2_img:
-        img.paste(p2_img, (520, 55), p2_img)
+        img.paste(p2_img, (505, 76), p2_img)
 
-    def caixa_status(x, y, nome, nivel, hp, hp_max):
-        draw.rounded_rectangle([x, y, x + 260, y + 78], radius=10, fill=(20, 25, 25), outline=(235, 235, 235), width=3)
-        draw.text((x + 14, y + 10), f"{nome.title()[:14]}", fill=(255, 255, 255))
-        draw.text((x + 190, y + 10), f"Lv.{nivel}", fill=(255, 255, 255))
-        draw.text((x + 14, y + 40), "HP", fill=(255, 210, 60))
-        draw.rounded_rectangle([x + 55, y + 43, x + 235, y + 57], radius=5, fill=(45, 45, 45), outline=(245, 245, 245), width=2)
+    # Pokébolas pequenas
+    def pokebolas(x, y, qtd=3):
+        for i in range(qtd):
+            px = x + i * 26
+            draw.ellipse([px, y, px+20, y+20], fill=(245, 245, 245), outline=(30, 30, 30), width=2)
+            draw.pieslice([px, y, px+20, y+20], 180, 360, fill=(220, 30, 35))
+            draw.line([px, y+10, px+20, y+10], fill=(30, 30, 30), width=2)
+            draw.ellipse([px+7, y+7, px+13, y+13], fill=(245, 245, 245), outline=(30, 30, 30), width=1)
+
+    def caixa_status(x, y, nome, nivel, hp, hp_max, mostrar_hp_num=True):
+        draw.rounded_rectangle([x, y, x + 285, y + 86], radius=12, fill=(18, 25, 23), outline=(230, 230, 230), width=3)
+        draw.text((x + 14, y + 10), nome.title()[:15], fill=(255, 255, 255), font=fonte)
+        draw.text((x + 215, y + 10), f"Lv.{nivel}", fill=(255, 255, 255), font=fonte)
+        draw.text((x + 14, y + 44), "HP", fill=(255, 215, 70), font=fonte)
+        draw.rounded_rectangle([x + 58, y + 48, x + 262, y + 64], radius=7, fill=(55, 55, 55), outline=(245, 245, 245), width=2)
         pct = 0 if hp_max <= 0 else max(0, min(1, hp / hp_max))
-        cor = (0, 230, 40) if pct > 0.5 else ((240, 210, 30) if pct > 0.2 else (230, 50, 50))
-        draw.rounded_rectangle([x + 58, y + 46, x + 58 + int(174 * pct), y + 54], radius=4, fill=cor)
-        draw.text((x + 150, y + 58), f"{max(0, hp)}/{hp_max}", fill=(255, 255, 255))
+        cor = (0, 230, 45) if pct > 0.50 else ((245, 205, 35) if pct > 0.20 else (230, 45, 45))
+        draw.rounded_rectangle([x + 61, y + 51, x + 61 + int(198 * pct), y + 61], radius=5, fill=cor)
+        if mostrar_hp_num:
+            texto = f"{max(0, hp)}/{hp_max}"
+            bbox = draw.textbbox((0, 0), texto, font=fonte_menor)
+            draw.text((x + 260 - (bbox[2]-bbox[0]), y + 66), texto, fill=(255, 255, 255), font=fonte_menor)
 
-    caixa_status(25, 35, pokemon2.get("nome", "NPC"), pokemon2.get("nivel", 1), hp2, hp2_max)
-    caixa_status(470, 270, pokemon1.get("nome", "Você"), pokemon1.get("nivel", 1), hp1, hp1_max)
+    caixa_status(28, 28, pokemon2.get("nome", "Inimigo"), pokemon2.get("nivel", 1), hp2, hp2_max, mostrar_hp_num=False)
+    pokebolas(40, 120)
+    caixa_status(445, 260, pokemon1.get("nome", "Você"), pokemon1.get("nivel", 1), hp1, hp1_max, mostrar_hp_num=True)
+    pokebolas(458, 350)
+
+    # Caixa de texto inferior estilo jogo
+    draw.rounded_rectangle([18, 315, largura - 18, altura - 18], radius=10, fill=(22, 42, 62), outline=(224, 58, 48), width=4)
+    if log_linhas:
+        linhas = []
+        for linha in log_linhas[:4]:
+            limpo = linha.replace("**", "").replace("`", "")
+            for e in ["🧢", "🤖", "🏆", "🔥", "⚡", "🔴", "🔵", "💀", "✨"]:
+                limpo = limpo.replace(e, "")
+            linhas.append(limpo.strip()[:62])
+    else:
+        linhas = [f"{pokemon1.get('nome','Seu Pokémon').title()} está pronto!", f"{pokemon2.get('nome','Inimigo').title()} apareceu!"]
+
+    y = 330
+    for linha in linhas:
+        draw.text((38, y), linha, fill=(245, 245, 245), font=fonte_log)
+        y += 23
 
     caminho = "batalha.png"
     img.save(caminho)
     return caminho
-
 
 def gerar_imagem_lista_pokemon(titulo, itens, mostrar_preco=True):
     largura = 760
