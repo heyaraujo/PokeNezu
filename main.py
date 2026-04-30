@@ -1932,14 +1932,16 @@ async def batalhar_ginasio(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
-@bot.tree.command(name="saldo", description="Mostra seu saldo de moedas.")
+@bot.tree.command(name="saldo", description="Veja seu saldo")
 async def saldo(interaction: discord.Interaction):
-    moedas = saldo_usuario(interaction.user.id, obter_guild_id(interaction))
-    await interaction.response.send_message(
-        f"💰 {interaction.user.mention}, você tem **{moedas} moedas**.",
+    await interaction.response.defer(ephemeral=True)
+
+    moedas = saldo_usuario(interaction.user.id, interaction.guild.id)
+
+    await interaction.followup.send(
+        f"💰 Você tem **{moedas} moedas**",
         ephemeral=True
     )
-
 
 @bot.tree.command(name="spawn_teste", description="Força um spawn manual para testar.")
 async def spawn_teste(interaction: discord.Interaction):
