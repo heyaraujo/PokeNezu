@@ -1139,36 +1139,34 @@ async def tutorial(interaction: discord.Interaction):
 async def iniciar(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
 
-    if usuario_tem_inicial(interaction.user.id):
+    guild_id = interaction.guild.id if interaction.guild else None
+
+    try:
+        ja_iniciou = usuario_tem_inicial(interaction.user.id, guild_id)
+    except TypeError:
+        ja_iniciou = usuario_tem_inicial(interaction.user.id)
+
+    if ja_iniciou:
         await interaction.followup.send(
-            "✅ Você já começou sua jornada! Use `/pokemon` para ver seus Pokémon.",
+            "✅ Você já começou sua jornada neste servidor! Use `/pokemon` para ver seus Pokémon.",
             ephemeral=True
         )
         return
 
+    caminho = gerar_imagem_iniciar_poketwo()
+    file = discord.File(caminho, filename="iniciar_pokenezu.png")
+
     embed = discord.Embed(
-        title="🎒 Escolha seu Pokémon inicial",
+        title="Welcome to the world of Pokémon!",
         description=(
-            "Use `/escolher pokemon:nome` para escolher seu inicial.\n"
-            "Exemplo: `/escolher pokemon:charmander`\n\n"
-            "Para ver imagem e detalhes de algum Pokémon, use `/info nome`."
+            "To start, choose one of the starter pokémon using the "
+            "`/escolher pokemon:<pokemon>` command."
         ),
         color=discord.Color.from_rgb(255, 105, 180)
     )
+    embed.set_image(url="attachment://iniciar_pokenezu.png")
 
-    for grupo in INICIAIS_VISUAL:
-        linhas = []
-        for nome, imagem in grupo["pokemons"]:
-            nome_limpo = nome.split(" ", 1)[1].lower()
-            linhas.append(f"{nome} → `/escolher pokemon:{nome_limpo}`")
-
-        embed.add_field(
-            name=grupo["titulo"],
-            value="\n".join(linhas),
-            inline=False
-        )
-
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed, file=file, ephemeral=True)
 
 
 @bot.tree.command(name="escolher", description="Escolha seu Pokémon inicial.")
@@ -1900,6 +1898,50 @@ async def saldo(interaction: discord.Interaction):
 async def spawn_teste(interaction: discord.Interaction):
     await interaction.response.send_message("🌿 Gerando um Pokémon selvagem...", ephemeral=True)
     await enviar_spawn(interaction.channel)
+
+
+def gerar_imagem_iniciar_poketwo():
+    largura = 760
+    margem_topo = 24
+    altura_linha = 58
+    altura = 120 + (len(INICIAIS_VISUAL) * altura_linha)
+
+    img = Image.new("RGB", (largura, altura), (47, 49, 56))
+    draw = ImageDraw.Draw(img)
+
+    draw.rectangle([0, 0, 8, altura], fill=(255, 105, 180))
+
+    x_texto = 28
+    y = margem_topo
+
+    draw.text((x_texto, y), "Welcome to the world of Pokémon!", fill=(255, 255, 255))
+    y += 34
+    draw.text((x_texto, y), "To start, choose one of the starter pokémon using", fill=(225, 225, 225))
+    y += 22
+    draw.rounded_rectangle([x_texto, y, x_texto + 250, y + 24], radius=4, fill=(70, 72, 82))
+    draw.text((x_texto + 8, y + 5), "/escolher pokemon:<pokemon>", fill=(235, 235, 245))
+    y += 38
+
+    for grupo in INICIAIS_VISUAL:
+        titulo = grupo["titulo"].replace("Geração", "Generation")
+        draw.text((x_texto, y), titulo, fill=(255, 255, 255))
+        y_item = y + 20
+        x = x_texto
+
+        for nome_com_emoji, sprite_url in grupo["pokemons"]:
+            nome = nome_com_emoji.split(" ", 1)[1] if " " in nome_com_emoji else nome_com_emoji
+            sprite = _carregar_sprite(sprite_url, (24, 24))
+            if sprite:
+                img.paste(sprite, (x, y_item - 3), sprite)
+            draw.text((x + 28, y_item + 2), nome, fill=(235, 235, 235))
+            x += 210
+
+        y += altura_linha
+
+    caminho = "iniciar_pokenezu.png"
+    img.save(caminho)
+    return caminho
+
 
 def _carregar_sprite(url, tamanho=(120, 120)):
     if not url:
