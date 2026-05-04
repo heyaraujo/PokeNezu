@@ -1,90 +1,107 @@
-# PokéNezu - Bot estilo Pokétwo em Português
+# 🐾 PokéNezu - Bot Pokémon estilo Pokétwo (PT-BR)
 
-Bot Pokémon para Discord com funções parecidas com o Pokétwo, mas totalmente em português.
+Bot avançado de Pokémon para Discord inspirado no Pokétwo, totalmente em português 🇧🇷, com sistema completo de captura, batalhas, ginásio, marketplace e imagens personalizadas.
 
-## Funções
+---
 
-- `/iniciar` - Mostra os Pokémon iniciais por geração
-- `/escolher pokemon` - Escolhe seu Pokémon inicial
-- `/capturar nome` - Captura o Pokémon selvagem atual
-- `/pokemon` - Lista seus Pokémon
-- `/info nome` - Mostra informações de um Pokémon
-- `/saldo` - Mostra suas moedas
-- `/spawn_teste` - Gera um spawn manual para teste
-- `/batalhar` - Batalha contra outro jogador
-- `/tutorial` - Mostra o tutorial do bot
+## 🚀 Principais Funcionalidades
 
-## Recursos
+### 🎮 Gameplay
+- `/iniciar` - Começa sua jornada com imagem estilo Pokétwo  
+- `/escolher pokemon` - Escolhe seu Pokémon inicial  
+- `/capturar nome` - Captura Pokémon selvagens  
+- `/pokemon` - Lista seus Pokémon (imagem estilo Pokétwo)  
+- `/info nome` - Mostra detalhes do Pokémon  
+- `/selecionar indice` - Define Pokémon ativo  
+- `/saldo` - Mostra suas moedas  
 
-- Slash commands `/`
-- Spawn automático a cada 50 minutos
-- Banco SQLite
-- Integração com PokeAPI
-- Embeds em português
-- Tipos traduzidos para PT-BR
+---
 
-## Instalação
+### ⚔️ Sistema de Batalha
 
-```bash
+- `/batalhar usuario:@player` → PvP por turnos  
+- `/batalhar_npc` → batalha contra NPC  
+- `/batalhar_ginasio` → batalha contra líder  
+
+💥 Recursos:
+- sistema de turnos  
+- status (queimado, paralisado)  
+- vantagem de tipos real  
+- dano baseado em stats reais  
+- imagens de batalha estilo Pokétwo (Pillow)  
+
+---
+
+### 🧠 IA de Ataques (Ultra Realista)
+
+✔ ataques oficiais da PokéAPI  
+✔ respeita nível do Pokémon  
+✔ aprende apenas por **level-up**  
+✔ detecta geração automaticamente  
+✔ usa versões compatíveis (FireRed, Emerald, etc)  
+✔ fallback inteligente por tipo  
+
+---
+
+### 🏆 Sistema de Ginásio
+
+- Spawn automático de líderes  
+- Configurável por servidor  
+
+Comando:
+
+/config ginasio #canal
+
+---
+
+### 🌿 Spawn de Pokémon
+
+/config spawn #canal
+
+---
+
+### 🛒 Marketplace
+
+Sistema completo de compra e venda de Pokémon entre jogadores.
+
+---
+
+### 🧾 Multi-Servidor
+
+Cada servidor tem seu próprio progresso (spawn, ginásio, economia).
+
+---
+
+## 🧩 Tecnologias
+
+- Python  
+- discord.py  
+- Pillow  
+- PostgreSQL  
+- PokeAPI  
+
+---
+
+## 📦 Instalação
+
 pip install -r requirements.txt
-```
 
-Renomeie `.env.example` para `.env` e configure:
+---
 
-```env
-DISCORD_TOKEN=SEU_TOKEN_AQUI
-CANAL_SPAWN_ID=ID_DO_CANAL
-TEMPO_SPAWN_MINUTOS=50
-```
+## 🔐 Configuração `.env`
 
-Rode:
+DISCORD_TOKEN=SEU_TOKEN  
+DATABASE_URL=SUA_DATABASE  
+TEMPO_SPAWN_MINUTOS=50  
 
-```bash
+---
+
+## ▶️ Rodar
+
 python main.py
-```
 
-## Permissões recomendadas no Discord
+---
 
-O bot precisa de:
+## ⚡ Status
 
-- Enviar mensagens
-- Usar slash commands
-- Inserir links
-- Anexar arquivos
-- Ler histórico de mensagens
-
-
-## Tutorial
-
-Leia também o arquivo `TUTORIAL.md` ou use `/tutorial` dentro do Discord.
-
-
-## Batalhas
-
-Use:
-
-```txt
-/batalhar usuario:@jogador
-```
-
-O bot usa o primeiro Pokémon de cada jogador e calcula o poder com base em:
-
-- nível
-- HP
-- ataque
-- defesa
-- velocidade
-
-O vencedor ganha +1 nível.
-
-## Evolução automática
-
-Quando um Pokémon atinge o nível mínimo da evolução, ele evolui automaticamente.
-
-Exemplo:
-
-- Charmander evolui para Charmeleon no nível 16
-- Bulbasaur evolui para Ivysaur no nível 16
-- Squirtle evolui para Wartortle no nível 16
-
-As evoluções são consultadas pela PokeAPI.
+🟢 Pronto para uso
